@@ -11,6 +11,9 @@ extern "C" {
 #endif//__cplusplus
 
 ;
+
+#define RWBUF_START_PTR(obj) ((obj)->buf + (obj)->offset)
+
 typedef struct rwbuf {
 	uint32_t offset;		
 	uint32_t len;		//data len

@@ -17,7 +17,11 @@
 #include <urcu/rculist.h>
 
 #include "tools/common/nofile_ctl.h"
+#include "tools/rwbuf/rwbuf.h"
 
+#define sm_malloc malloc
+#define sm_realloc realloc
+#define sm_free	free
 
 //session manager的状态机
 typedef struct manager_flag {
@@ -41,6 +45,9 @@ typedef struct sock_session {
 	uint16_t	port;
 	char		ip[16];	
 
+	rwbuf_t		rbuf;			//接收缓冲区
+	rwbuf_t		wbuf;			//发送缓冲区
+
 	uint8_t		udatalen;		//用户数据长度
 	uint8_t		udata[64];		//用户数据, 用户自定义
 	
@@ -57,6 +64,7 @@ typedef struct sock_session {
 	struct cds_list_head	elem_listens;
 	struct cds_list_head	elem_pending_recv;
 	struct cds_list_head	elem_pending_send;
+	struct cds_list_head	elem_cache;
 }sock_session_t;
 
 //session manager
@@ -71,10 +79,18 @@ typedef struct session_manager {
 	struct cds_list_head list_listens;
 	struct cds_list_head list_pending_recv;
 	struct cds_list_head list_pending_send;
+	struct cds_list_head list_session_cache;
 
 	uint8_t		udatalen;		//用户数据长度
 	uint8_t		udata[64];		//用户数据, 用户自定义
 }session_manager_t;
+
+/*
+	static variable
+*/
+
+static CDS_LIST_HEAD(_slist_session_cache);
+
 
 
 /*
@@ -137,12 +153,12 @@ static int try_socket(int _domain, int _type, int _protocol) {
 }
 
 
-
 /*
 	global function
 */
 
-session_manager_t* sm_init_manager() {
+session_manager_t* sm_init_manager(uint32_t cache_size) {
+	
 	session_manager_t* sm = (session_manager_t*)malloc(sizeof(session_manager_t));
 	if (!sm)return 0;
 
@@ -156,6 +172,17 @@ session_manager_t* sm_init_manager() {
 	CDS_INIT_LIST_HEAD(&(sm->list_listens));
 	CDS_INIT_LIST_HEAD(&(sm->list_pending_recv));
 	CDS_INIT_LIST_HEAD(&(sm->list_pending_send));
+	CDS_INIT_LIST_HEAD(&(sm->list_session_cache));
+
+	//create cache_session
+	for (int i = 0; i < cache_size; ++i) {
+		sock_session_t* ss = sm_malloc(sizeof(sock_session_t));
+		if (ss) {
+			memset(ss, 0, sizeof(sock_session_t));
+			cds_list_add(&ss->elem_cache, &sm->list_session_cache);
+		}else
+			goto sm_init_manager_failed;	
+	}
 
 	//inti timer manager
 	sm->ht_timer = ht_create_heap_timer();
@@ -180,6 +207,9 @@ session_manager_t* sm_init_manager() {
 	return sm;
 
 sm_init_manager_failed:
+	if (cds_list_empty(&sm->list_session_cache)) {
+		//agen
+	}
 	if (sm->ht_timer) {
 		ht_destroy_heap_timer(sm->ht_timer);
 	}

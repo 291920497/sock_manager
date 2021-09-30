@@ -70,7 +70,7 @@ int32_t rwbuf_aband_front(rwbuf_t* rwb, uint32_t aband_len) {
 	rwb->len -= aband_len;
 
 	if (rwb->len)
-		rwb->offset = rwb->offset + aband_len;
+		rwb->offset += aband_len;
 	else
 		rwb->offset = 0;
 

@@ -35,7 +35,7 @@ extern "C" {
 //函数声明
 
 //创建一个session管理器
-session_manager_t* sm_init_manager();
+session_manager_t* sm_init_manager(uint32_t cache_size);
 
 //销毁session管理器
 void sm_exit_manager(session_manager_t* sm);
