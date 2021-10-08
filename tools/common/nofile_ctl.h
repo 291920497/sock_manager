@@ -11,9 +11,7 @@ extern "C" {
 ;
 int32_t nofile_ckup();
 
-int32_t tools_set_nonblocking(int32_t fd);
-
-
+int32_t nofile_set_nonblocking(int32_t fd);
 
 #ifdef __cplusplus
 }

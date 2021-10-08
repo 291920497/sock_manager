@@ -28,7 +28,7 @@ int32_t rwbuf_relc(rwbuf_t* rwb, uint32_t capacity) {
 void rwbuf_free(rwbuf_t* rwb) {
 	if (rwb->buf) {
 		_rwbuf_free(rwb->buf);
-		rwb->buf = NULL;
+		memset(rwb, 0, sizeof(rwbuf_t));
 	}
 }
 

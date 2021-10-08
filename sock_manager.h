@@ -1,13 +1,23 @@
 #ifndef _SESSION_MANAGER_H_
 #define _SESSION_MANAGER_H_
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif//_GNU_SOURCE
+
 #include <stdio.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <stdlib.h>
 
+
 #ifndef MAX_EPOLL_SIZE
-#define MAX_EPOLL_SIZE (512)
+#define MAX_EPOLL_SIZE 512
 #endif//MAX_EPOLL_SIZE
+
+#ifndef MAX_USERDATA_LEN
+#define MAX_USERDATA_LEN 64
+#endif//MAX_USERDATA_LEN
 
 
 

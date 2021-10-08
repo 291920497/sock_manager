@@ -33,7 +33,7 @@ int32_t nofile_ckup() {
 	return SERROR_OK;
 }
 
-int32_t tools_set_nonblocking(int32_t fd) {
+int32_t nofile_set_nonblocking(int32_t fd) {
 	int old_opt = fcntl(fd, F_GETFL);
 	int new_opt = old_opt | O_NONBLOCK;
 	fcntl(fd, F_SETFL, new_opt);
