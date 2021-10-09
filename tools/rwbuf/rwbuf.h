@@ -12,7 +12,10 @@ extern "C" {
 
 ;
 
-#define RWBUF_START_PTR(obj) ((obj)->buf + (obj)->offset)
+#define RWBUF_START_PTR(ptr) ((ptr)->buf + (ptr)->offset)
+#define RWBUF_UNUSE_LEN(ptr) ((ptr)->size - (ptr)->offset - (ptr)->len)
+#define RWBUF_GET_LEN(ptr) ((ptr)->len)
+//#define RWBUF_ADD_LEN
 
 typedef struct rwbuf {
 	uint32_t offset;		
@@ -30,6 +33,8 @@ void rwbuf_free(rwbuf_t* rwb);
 int32_t rwbuf_append(rwbuf_t* rwb, void* data, uint32_t data_len);
 
 int32_t rwbuf_aband_front(rwbuf_t* rwb, uint32_t aband_len);
+
+int32_t rwbuf_replan(rwbuf_t* rwb);
 
 void rwbuf_clear(rwbuf_t* rwb);
 

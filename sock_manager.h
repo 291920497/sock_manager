@@ -52,7 +52,13 @@ void sm_exit_manager(session_manager_t* sm);
 
 void sm_set_run(session_manager_t* sm, uint8_t run);
 
-int32_t sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len, session_behavior_t behavior, void* udata, uint8_t udata_len);
+sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len, 
+	session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len, 
+	uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+void sm_del_session(sock_session_t* ss);
 
 int32_t sm_run2(session_manager_t* sm, uint64_t us);
 
