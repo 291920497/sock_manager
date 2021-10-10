@@ -6,6 +6,7 @@
 #include <time.h>
 #include <sys/time.h>
 
+
 #include "heap_obj.h"
 
 
@@ -122,13 +123,19 @@ void ht_destroy_heap_timer(heap_timer_t* ht) {
 	}
 }
 
-uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval_ms,uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* user_data) {
+uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval_ms,uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* udata, uint8_t udata_len) {
+	if (udata_len > HT_USERDATA_LEN)
+		return -1;
+
 	timer_element_t* te = ht_malloc(sizeof(timer_element_t));
 	if (te) {
 		te->interval = interval_ms;
 		te->repeat = repeat;
 		te->on_timeout = on_timeout;
-		te->user_data = user_data;
+		//te->user_data = user_data;
+		//te->udata = udata;
+		memcpy(te->udata, udata, udata_len);
+		te->udata_len = udata_len;
 		te->ring_time = get_local_ms() + delay_ms + interval_ms;
 
 		ht_enter_timerobj_lock(ht);
@@ -192,7 +199,7 @@ uint32_t ht_update_timer(heap_timer_t* ht) {
 		if (te->ring_time <= cur_ms) {
 			ht->running_timer = te;
 			if (te->on_timeout) {
-				te->on_timeout(te->timer_id, te->user_data);
+				te->on_timeout(te->timer_id, te->udata);
 			}
 
 			if (te->repeat != -1 && (te->repeat -= 1) == 0) {

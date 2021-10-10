@@ -1,13 +1,24 @@
 #ifndef _HEAP_TIMER_H_
 #define _HEAP_TIMER_H_
 
+/*
+æ˜¯å¦å¯ç”¨å•çº¿ç¨‹æ¨¡å¼,å³ä¾¿æ˜¯å•çº¿ç¨‹ä½¿ç”¨åŸå­é”ï¼Œä¹Ÿå°†å¸¦æ¥æ—¶é—´çš„æŸè€—ï¼Œå³ä¾¿å¾ˆå°
+ä½†ç¡®å®šåœ¨å•çº¿ç¨‹ç¯å¢ƒä¸‹ä½¿ç”¨ï¼Œä¾ç„¶å»ºè®®å¯åŠ¨è¯¥é¢„å¤„ç†
+*/
+//#define HT_SINGLE_THREAD_MOD
+
+
+#ifndef HT_SINGLE_THREAD_MOD
+
 #ifdef _WIN32
 #include <Windows.h>
 #else
-//±àÒëÌí¼Ó_GNU_SOURCEÔ¤´¦Àí
+//ç¼–è¯‘æ·»åŠ _GNU_SOURCEé¢„å¤„ç†,ç”¨äºæ”¯æŒåŸå­é”
+#define _GNU_SOURCE 1
 #include <pthread.h>
 #endif//_WIN32
 
+#endif//HT_SINGLE_THREAD_MOD
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -16,20 +27,26 @@ extern "C"
 #endif
 
 
-/*
-ÊÇ·ñÆôÓÃµ¥Ïß³ÌÄ£Ê½,¼´±ãÊÇµ¥Ïß³ÌÊ¹ÓÃÔ­×ÓËø£¬Ò²½«´øÀ´Ê±¼äµÄËğºÄ£¬¼´±ãºÜĞ¡
-µ«È·¶¨ÔÚµ¥Ïß³Ì»·¾³ÏÂÊ¹ÓÃ£¬ÒÀÈ»½¨ÒéÆô¶¯¸ÃÔ¤´¦Àí
-*/
-#define HT_SINGLE_THREAD_MOD
+
+
+
+
+//å¦‚æœæœ‰éœ€æ±‚å¯ä»¥ä¿®æ”¹è¿™ä¸ªé•¿åº¦, æš‚å›ºå®š64
+#define HT_USERDATA_LEN 64
 
 typedef struct heap_obj heap_obj_t;
 
 typedef struct timer_element {
-	uint32_t timer_id;	//¶¨Ê±Æ÷ID
-	uint32_t interval;	//¼ä¸ôÊ±¼ä
-	uint64_t ring_time;	//ÏìÁåÊ±¼ä
-	int32_t repeat;	//ÖØ¸´´ÎÊı
+	uint32_t timer_id;	//å®šæ—¶å™¨ID
+	uint32_t interval;	//é—´éš”æ—¶é—´
+	uint64_t ring_time;	//å“é“ƒæ—¶é—´
+	int32_t repeat;	//é‡å¤æ¬¡æ•°
+#if 0
 	void* user_data;
+#else
+	char udata[HT_USERDATA_LEN];		
+	uint8_t udata_len;
+#endif
 	void(*on_timeout)(uint32_t, void*);
 }timer_element_t;
 
@@ -60,7 +77,7 @@ void ht_destroy_heap_timer(heap_timer_t* ht);
 	-1 failed;
 	other timer_id;
 */
-uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* user_data);
+uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* udata, uint8_t udata_len);
 
 void ht_del_timer(heap_timer_t* ht, uint32_t timer_id);
 

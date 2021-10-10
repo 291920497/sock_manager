@@ -28,6 +28,8 @@
 #define _sm_realloc realloc
 #define _sm_free	free
 
+#define MAX_RECONN_SERVER_TIMEOUT 5
+
 //sock_session 的状态机
 typedef struct session_flag {
 	int32_t		closed : 1;
@@ -64,6 +66,8 @@ typedef struct sock_session {
 	uint8_t		udatalen;		//用户数据长度
 	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
 	
+	uint8_t		rtry_number;	//尝试读的次数
+	//uint8_t		wtry_number;	//尝试写的次数
 	uint64_t	last_active;	//最后一次活跃的时间
 
 	session_event_cb		recv_cb;		//可读事件回调
@@ -194,8 +198,10 @@ static int32_t sf_domain2ip(const char* domain, char* ip_buf, uint16_t buf_len) 
 
 	addr = (struct sockaddr_in*)res->ai_addr;
 	if (!inet_ntop(AF_INET, &addr->sin_addr, ip_buf, buf_len)) {
+		freeaddrinfo(res);
 		return EAI_OVERFLOW;
 	}
+	freeaddrinfo(res);
 	return SERROR_OK;
 }
 
@@ -234,7 +240,6 @@ static uint32_t sf_uuidhash() {
 //构建sock_session_t
 static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, uint8_t enable_et, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
 	int rt;
-	char uuid_buf[64];
 
 	if (!ss || !sm || udata_len > MAX_USERDATA_LEN)
 		return SERROR_INPARAM_ERR;
@@ -301,6 +306,9 @@ static void sf_destruct_session(sock_session_t* ss) {
 	ss->last_active = 0;
 	ss->uuid_hash = 0;
 	ss->ip[0] = 0;
+
+	ss->rtry_number = 0;
+	//ss->wtry_number = 0;
 
 	ss->flag.closed = ~0;
 	ss->flag.etmod = 0;
@@ -384,6 +392,76 @@ static int sf_try_socket(int _domain, int _type, int _protocol) {
 	return fd;
 }
 
+static int32_t sf_reconnect_server(sock_session_t* ss) {
+	int fd, rt, ev;
+	struct sockaddr_in sin;
+
+	if (ss->fd != -1) {
+		shutdown(ss->fd, SHUT_RDWR);
+		ss->fd = -1;
+	}
+
+	fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
+	if (fd == -1)
+		return SERROR_SYSAPI_ERR;
+
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(ss->port);
+	sin.sin_addr.s_addr = inet_addr(ss->ip);
+
+	ss->fd = fd;
+	if (ss->flag.etmod)
+		nofile_set_nonblocking(fd);
+
+	rt = connect(ss->fd, (const struct sockaddr*)&sin, sizeof(sin));
+	//if connect error
+	if (rt == -1 && errno != EINPROGRESS) {
+		////set need reconnect
+		//ss->flag.closed = ~0;
+		return SERROR_SYSAPI_ERR;
+	}
+	else {
+		//add epoll status
+		ev = (ss->flag.etmod ? EV_ET : 0) | EV_RECV;
+		rt = sf_add_event(ss->sm, ss, ev);
+		if (rt != SERROR_OK)
+			return SERROR_SYSAPI_ERR;
+	}
+	ss->flag.closed = 0;
+
+	return SERROR_OK;
+}
+
+static void sf_timer_reconn_cb(uint32_t timer_id, void* p) {
+	session_manager_t* sm = *(session_manager_t**)p;
+
+	int rt;
+	const char* einprogress = "Connection in progress";
+	const char* refused = "Connection refused";
+	const char* success = "Connection succeeded";
+	const char* msg;
+	uint64_t ct = time(0);
+
+	sock_session_t* ss, * n;
+	cds_list_for_each_entry(ss, &sm->list_servers, elem_servers) {
+		if (ss->flag.closed) {
+			rt = sf_reconnect_server(ss);
+			if (rt == SERROR_OK) {
+				if (ss->flag.etmod)
+					msg = einprogress;
+				else
+					msg = success;
+
+				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, msg);
+			}
+			else {
+				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
+			}
+				
+		}
+	}
+}
+
 /**
 *	s_try_accept - Try to accept a sock fileno
 */
@@ -409,9 +487,40 @@ static int sf_try_accept(int __fd, __SOCKADDR_ARG __addr, socklen_t* __restrict 
 	return fd;
 }
 
+static void sf_del_session(sock_session_t* ss) {
+	if (ss) {
+		sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
+
+		//发送一个事件给消费线程, 通知断开事件以及尚未发送的数据
+		//...
+
+
+		//sf_destruct_session(ss);
+
+
+
+		//从未决队列中移除
+		if (cds_list_empty(&ss->elem_pending_recv) == 0)
+			cds_list_del_init(&ss->elem_pending_recv);
+
+		if (cds_list_empty(&ss->elem_pending_send) == 0)
+			cds_list_del_init(&ss->elem_pending_send);
+
+		if (cds_list_empty(&ss->elem_online) == 0)
+			cds_list_del_init(&ss->elem_online);
+
+		if (cds_list_empty(&ss->elem_listens) == 0)
+			cds_list_del_init(&ss->elem_listens);
+
+		/*if (cds_list_empty(&ss->elem_servers) == 0)
+			cds_list_del_init(&ss->elem_servers);*/
+
+		ss->flag.closed = ~0;
+	}
+}
+
 static void sf_accpet_cb(sock_session_t* ss) {
 	do {
-		int rt;
 		struct sockaddr_in c_sin;
 		socklen_t s_len = sizeof(c_sin);
 		memset(&c_sin, 0, sizeof(c_sin));
@@ -452,9 +561,14 @@ static void sf_recv_cb(sock_session_t* ss) {
 		int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
 
 #if TEST_CODE
+		//如果已经没有额外可用的buffer
 		if (buflen == 0) {
-			//这行代码应该是不会执行的
 			printf("rwbuf->len = 0\n");
+
+			//加入未决队列中, 理论上, 这里是不会执行到的.(在当前线程读写正常的前提下)
+			if (cds_list_empty(&ss->elem_pending_recv))
+				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
+			return;
 		}
 #endif
 
@@ -501,6 +615,8 @@ static void sf_recv_cb(sock_session_t* ss) {
 
 		//修改接收缓冲区的长度, 不额外提供接口
 		ss->rbuf.len += rd;
+		//重置读尝试的次数
+		ss->rtry_number = 0;
 		return;
 	} while (0);
 	
@@ -514,18 +630,23 @@ static void sf_recv_cb(sock_session_t* ss) {
 
 #ifdef TEST_CODE
 	if (rt == SERROR_SYSAPI_ERR)
-		printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
 	else if (rt == SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
 
-	sm_del_session(ss);
+	//sm_del_session(ss);
 #endif
 
+	//如果是服务器则暂不回收, 等待重连
+	if (cds_list_empty(&ss->elem_servers))
+		sm_del_session(ss);
+	else
+		sf_del_session(ss);
 }
 
 static void sf_send_cb(sock_session_t* ss) {
 	//如果已经完全关闭, 可能存在半连接,那么剩余的数据也应该尝试发送, 所以这个状态一定要严谨
-	if (ss->flag.closed || ss->flag.ready == 0)
+	if (ss->flag.closed)
 		return;
 
 	//uint32_t len = RWBUF_GET_LEN(&ss->wbuf);
@@ -599,23 +720,41 @@ static void sf_send_cb(sock_session_t* ss) {
 
 #ifdef TEST_CODE
 	if (rt == SERROR_SYSAPI_ERR)
-		printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
 	else if (rt == SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
 
-	sm_del_session(ss);
+	//sm_del_session(ss);
+	//如果是服务器则暂不回收, 等待重连
+	if (cds_list_empty(&ss->elem_servers))
+		sm_del_session(ss);
+	else
+		sf_del_session(ss);
 #endif
 }
+
+
 
 //处理写未决
 static void sf_pending_send(session_manager_t* sm) {
 	if (sm) {
-		sock_session_t* pos, * n;
+		sock_session_t* ss, * n;
 		if (cds_list_empty(&sm->list_pending_send) == 0) {
-			cds_list_for_each_entry_safe(pos, n, &sm->list_pending_send, elem_pending_send) {
+			cds_list_for_each_entry_safe(ss, n, &sm->list_pending_send, elem_pending_send) {
 				//减少不必要的函数调用
-				if (pos->flag.closed == 0 && pos->flag.ready) 
-					sf_send_cb(pos);
+				if (ss->flag.closed == 0 && RWBUF_GET_LEN(&ss->wbuf))
+					sf_send_cb(ss);
+				/*else if(RWBUF_GET_LEN(&ss->wbuf) == 0){
+					if (++ss->wtry_number > 8) {
+						if (cds_list_empty(&ss->elem_servers))
+							sm_del_session(ss);
+						else
+							sf_del_session(ss);
+
+						printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+					}
+				}*/
+					
 			}
 		}
 	}
@@ -624,11 +763,26 @@ static void sf_pending_send(session_manager_t* sm) {
 //处理读未决
 static void sf_pending_recv(session_manager_t* sm) {
 	if (sm) {
-		sock_session_t* pos, * n;
+		sock_session_t* ss, * n;
 		if (cds_list_empty(&sm->list_pending_recv) == 0) {
-			cds_list_for_each_entry_safe(pos, n, &sm->list_pending_recv, elem_pending_recv) {
-				if (pos->flag.closed == 0)
-					sf_recv_cb(pos);
+			cds_list_for_each_entry_safe(ss, n, &sm->list_pending_recv, elem_pending_recv) {
+				//尚未关闭且有剩余缓冲区
+				if (ss->flag.closed == 0) {
+					if (RWBUF_UNUSE_LEN(&ss->rbuf))
+						sf_recv_cb(ss);
+					else {
+						//尝试读取8次,缓冲区都没有空间, 那么一定输出BUF出现了问题, 在正常的前提下,这应该永远不会发生
+						if (++ss->rtry_number > 8) {
+							if (cds_list_empty(&ss->elem_servers))
+								sm_del_session(ss);
+							else
+								sf_del_session(ss);
+							printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "Receive buffer full");
+						}
+					}
+				}
+				/*if (pos->flag.closed == 0 && RWBUF_UNUSE_LEN(&pos->rbuf))
+					sf_recv_cb(pos);*/
 			}
 		}
 	}
@@ -699,7 +853,7 @@ session_manager_t* sm_init_manager(uint32_t cache_size) {
 	//heart cb
 	//ht_add_timer(sm->ht_timer, MAX_HEART_TIMEOUT * 1000, 0, -1, cb_on_heart_timeout, sm);
 	//server reconnect cb
-	//ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, 0, -1, cb_on_reconnection_timeout, sm);
+	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, 0, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 
 	return sm;
 
@@ -763,12 +917,21 @@ void sm_exit_manager(session_manager_t* sm){
 		}
 	}
 
-	if (sm->ht_timer) {
+	/*while (cds_list_empty(&sm->list_session_cache) == 0) {
+		pos = cds_list_entry(sm->list_session_cache.next, struct sock_session, elem_cache);
+		cds_list_del_init(&pos->elem_cache);
+		rwbuf_free(&pos->rbuf);
+		rwbuf_free(&pos->wbuf);
+		printf("free: %p\n", pos);
+		_sm_free(pos);
+	}*/
+
+	if (sm->ht_timer) 
 		ht_destroy_heap_timer(sm->ht_timer);
-	}
-	if (sm) {
+
+	if (sm) 
 		free(sm);
-	}
+	
 }
 
 void sm_set_run(session_manager_t* sm, uint8_t run) {
@@ -780,7 +943,7 @@ void sm_set_run(session_manager_t* sm, uint8_t run) {
 sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len, 
 	session_behavior_t behavior, void* udata, uint8_t udata_len) {
 	sock_session_t* ss = 0;
-	int rt, err, fd, ev, try_count = 1, optval = 1;
+	int rt, fd, ev, optval = 1;
 
 	if (!sm) return ss;
 
@@ -855,42 +1018,109 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 	return ss;
 }
 
+sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+	session_behavior_t behavior, void* udata, uint8_t udata_len) {
+
+	if (!sm)
+		return 0;
+
+	int fd, rt, ev = 0;
+	sock_session_t* ss = 0;
+	struct sockaddr_in sin;
+	char ip[32] = { 0 };
+
+	do {
+		rt = sf_domain2ip(domain, ip, sizeof(ip));
+		if (rt != SERROR_OK)
+			break;
+
+		fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
+		if (fd == -1)
+			break;
+
+		ss = sf_cache_session(sm);
+		if (!ss) 
+			break;
+
+		rt = sf_construct_session(sm, ss, fd, enable_et, ip, port, max_send_len, sf_recv_cb, behavior, udata, udata_len);
+		if (rt != SERROR_OK)
+			break;
+
+		sin.sin_family = AF_INET;
+		sin.sin_port = htons(port);
+		sin.sin_addr.s_addr = inet_addr(ip);
+
+		rt = connect(fd, &sin, sizeof(sin));
+		//if connect error
+		if (rt == -1 && errno != EINPROGRESS) {
+			////set need reconnect
+			//ss->flag.closed = ~0;
+			break;
+		}
+		else {
+			//add epoll status
+			ev = (enable_et ? EV_ET : 0) | EV_RECV;
+			rt = sf_add_event(sm, ss, ev);
+			if (rt != SERROR_OK)
+				break;
+		}
+
+		//If it is in ET mode and the connection fails, waiting reconnect
+		if (enable_et == 0 && rt == -1)
+			break;
+
+		cds_list_add_tail(&ss->elem_servers, &sm->list_servers);
+		return ss;
+
+	} while (0);
+
+
+	if (ss)
+		sf_free_session(sm, ss);
+
+	if (fd != -1)
+		close(fd);
+	return 0;
+}
+
+uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, void(*timer_cb)(uint32_t, void*), void* udata, uint8_t udata_len) {
+	if (sm == 0 || sm->ht_timer == 0)
+		return -1;
+
+	return ht_add_timer(sm->ht_timer, interval_ms, delay_ms, repeat, timer_cb, udata, udata_len);
+}
+
+void sm_del_timer(session_manager_t* sm, uint32_t timer_id, uint32_t is_incallback) {
+	if (sm == 0 || timer_id < 0)
+		return;
+
+	if (is_incallback)
+		ht_del_timer_incallback(sm->ht_timer, timer_id);
+	else
+		ht_del_timer(sm->ht_timer, timer_id);
+}
+
 void sm_del_session(sock_session_t* ss) {
-	if (ss) {
-		sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
 
-		//发送一个事件给消费线程, 通知断开事件以及尚未发送的数据
-		//...
+	//统一操作, 但不包括服务器列表
+	sf_del_session(ss);
 
+	if (cds_list_empty(&ss->elem_servers) == 0)
+		cds_list_del_init(&ss->elem_servers);
 
-		//sf_destruct_session(ss);
+	//加入到离线队列
+	cds_list_add_tail(&ss->elem_offline, &ss->sm->list_offline);
 
+	//因为fd尚未回收, 统一在一个函数内操作,减少用户态->内核态的切换
+}
 
+int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int)) {
+	struct sigaction new_act;
+	memset(&new_act, 0, sizeof(new_act));
+	new_act.sa_handler = cb;
+	sigfillset(&new_act.sa_mask);
 
-		//从未决队列中移除
-		if (cds_list_empty(&ss->elem_pending_recv) == 0)
-			cds_list_del_init(&ss->elem_pending_recv);
-
-		if (cds_list_empty(&ss->elem_pending_send) == 0)
-			cds_list_del_init(&ss->elem_pending_send);
-
-		if (cds_list_empty(&ss->elem_online) == 0)
-			cds_list_del_init(&ss->elem_online);
-
-		if (cds_list_empty(&ss->elem_listens) == 0)
-			cds_list_del_init(&ss->elem_listens);
-
-		if (cds_list_empty(&ss->elem_servers) == 0)
-			cds_list_del_init(&ss->elem_servers);
-
-
-		//加入到离线队列
-		cds_list_add_tail(&ss->elem_offline, &ss->sm->list_offline);
-			//cds_list_add_tail(&ss->elem_online)
-		ss->flag.closed = ~0;
-
-		//因为fd尚未回收, 统一在一个函数内操作,减少用户态->内核态的切换
-	}
+	return sigaction(sig, &new_act, 0);
 }
 
 int32_t sm_run2(session_manager_t* sm, uint64_t us) {
@@ -900,39 +1130,36 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 
 	if (ret == -1) {
 		if (errno != EINTR) { return -1; }
+		//printf("epoll_wait: %d, %s\n", errno, strerror(errno));
 		return 0;
 	}
 
 	for (int i = 0; i < ret; ++i) {
 		sock_session_t* ss = (struct sock_session*)events[i].data.ptr;
 		if (events[i].events & EPOLLIN) {
-			//ss->on_recv_cb(ss);
 			ss->recv_cb(ss);
-			/*if (ss->i_buf.recv_len && ss->on_protocol_recv_cb) {
-				ss->on_protocol_recv_cb(ss);
-			}*/
 		}
 		if (events[i].events & EPOLLOUT) {
-			//sm_send(ss);
 			sf_send_cb(ss);
 		}
 	}
 
-	//sm_pending_send(sm);
-	//sm_pending_recv(sm);
-	//sm_clear_offline(sm);
 	sf_pending_send(sm);
 	sf_pending_recv(sm);
 	sf_clean_offline(sm);
-	return 0;
+
+	return ~0;
 }
 
 void sm_run(session_manager_t* sm) {
 	while (sm->flag.running) {
-		uint64_t wait_time = ht_update_timer(sm->ht_timer);
+		uint64_t waitms = ht_update_timer(sm->ht_timer);
+
+		if (cds_list_empty(&sm->list_pending_send) == 0 || cds_list_empty(&sm->list_pending_recv) == 0)
+			waitms = 0;
 
 		//signal
-		if (sm_run2(sm, wait_time) == 0) {
+		if (sm_run2(sm, waitms) == 0) {
 			if (errno == SIGQUIT)
 				sm->flag.running = 0;
 		}

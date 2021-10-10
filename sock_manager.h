@@ -58,7 +58,16 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len, 
 	uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
+sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+	session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, void(*timer_cb)(uint32_t, void*), void* udata, uint8_t udata_len);
+
+void sm_del_timer(session_manager_t* sm, uint32_t timer_id, uint32_t is_incallback);
+
 void sm_del_session(sock_session_t* ss);
+
+int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int));
 
 int32_t sm_run2(session_manager_t* sm, uint64_t us);
 
