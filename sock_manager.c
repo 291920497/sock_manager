@@ -353,6 +353,7 @@ static sock_session_t* sf_cache_session(session_manager_t* sm) {
 		//new session
 		ss = _sm_malloc(sizeof(sock_session_t));
 		if (ss) {
+			memset(ss, 0, sizeof(sock_session_t));
 			sf_destruct_session(ss);
 		}
 		return ss;
@@ -379,16 +380,19 @@ static void sf_free_session(session_manager_t* sm, sock_session_t* ss) {
 
 static int sf_try_socket(int _domain, int _type, int _protocol) {
 	int fd, try_count = 1;
+
 	do {
 		fd = socket(AF_INET, SOCK_STREAM, 0);
-		//failed and no attempt
-		if (fd == -1 && try_count) {
-			--try_count;
-
+		if (fd == -1) {
 			if (nofile_ckup() == 0)
 				continue;
+			return SERROR_SYSAPI_ERR;
 		}
-	} while (0);
+
+		break;
+
+	} while (try_count--);
+	
 	return fd;
 }
 
@@ -452,7 +456,9 @@ static void sf_timer_reconn_cb(uint32_t timer_id, void* p) {
 				else
 					msg = success;
 
+#if TEST_CODE
 				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, msg);
+#endif
 			}
 			else {
 				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
@@ -466,24 +472,30 @@ static void sf_timer_reconn_cb(uint32_t timer_id, void* p) {
 *	s_try_accept - Try to accept a sock fileno
 */
 static int sf_try_accept(int __fd, __SOCKADDR_ARG __addr, socklen_t* __restrict __addr_len) {
-	int fd = -1, try_count = 1;
+	int fd = -1, try_count = 1, err;
+
 	do {
 		fd = accept(__fd, __addr, __addr_len);
-		if (fd == -1) {
-			int err = errno;
 
+		if (fd == -1) {
+			err = errno;
+			
 			//is nothing
 			if (err == EAGAIN)
 				return -2;
 			//If the error is caused by fileno and the processing is complete
 			else if (err == EMFILE && try_count) {
-				--try_count;
 				if (nofile_ckup() == 0)
 					continue;
 			}
+
 			return -1;
 		}
-	} while (0);
+
+		break;
+
+	} while (try_count--);
+
 	return fd;
 }
 
@@ -530,18 +542,22 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		c_fd = sf_try_accept(ss->fd, &c_sin, &s_len);
 		if (c_fd == -2) {
 			//半连接池没有可以接收的套接字
+			if (cds_list_empty(&ss->elem_pending_recv) == 0)
+				cds_list_del_init(&ss->elem_pending_recv);	
 			return;
 		}
 		else if (c_fd == -1) {
 			//printf("[%s] [%s:%d] [%s] Accept function failed. errmsg: [ %s ]\n", tools_get_time_format_string(), __FILENAME__, __LINE__, __FUNCTION__, strerror(errno));
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
+			if(cds_list_empty(&ss->elem_pending_recv))
+				cds_list_add_tail(&ss->elem_pending_recv, & ss->sm->list_pending_recv);
 			return;
 		}
 
 		const char* ip = inet_ntoa(c_sin.sin_addr);
 		unsigned short port = ntohs(c_sin.sin_port);
-
+		//printf("fd: %d\n", c_fd);
 		sock_session_t* css = sm_add_client(ss->sm, c_fd, ip, port, ss->flag.etmod, ss->wbuf.size, 1, ss->uevent, ss->udata, ss->udatalen);
 		if (!css) {
 			//系统API调用错误 查看errno
@@ -628,13 +644,13 @@ static void sf_recv_cb(sock_session_t* ss) {
 		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, "client disconnect");
 	}*/
 
-#ifdef TEST_CODE
+
 	if (rt == SERROR_SYSAPI_ERR)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
+
+#ifdef TEST_CODE
 	else if (rt == SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-
-	//sm_del_session(ss);
 #endif
 
 	//如果是服务器则暂不回收, 等待重连
@@ -717,12 +733,14 @@ static void sf_send_cb(sock_session_t* ss) {
 		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, "client disconnect");
 	}
 	sm_del_session(ss);*/
-
-#ifdef TEST_CODE
+	
 	if (rt == SERROR_SYSAPI_ERR)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
-	else if (rt == SERROR_PEER_DISCONN)
+
+#ifdef TEST_CODE
+	else if(rt == SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+#endif//TEST_CODE
 
 	//sm_del_session(ss);
 	//如果是服务器则暂不回收, 等待重连
@@ -730,7 +748,6 @@ static void sf_send_cb(sock_session_t* ss) {
 		sm_del_session(ss);
 	else
 		sf_del_session(ss);
-#endif
 }
 
 
@@ -768,8 +785,10 @@ static void sf_pending_recv(session_manager_t* sm) {
 			cds_list_for_each_entry_safe(ss, n, &sm->list_pending_recv, elem_pending_recv) {
 				//尚未关闭且有剩余缓冲区
 				if (ss->flag.closed == 0) {
+					//可能是监听套接字
 					if (RWBUF_UNUSE_LEN(&ss->rbuf))
-						sf_recv_cb(ss);
+						//sf_recv_cb(ss);
+						ss->recv_cb(ss);
 					else {
 						//尝试读取8次,缓冲区都没有空间, 那么一定输出BUF出现了问题, 在正常的前提下,这应该永远不会发生
 						if (++ss->rtry_number > 8) {
@@ -795,9 +814,10 @@ static void sf_clean_offline(session_manager_t* sm) {
 	cds_list_for_each_entry_safe(pos, n, &sm->list_offline, elem_offline) {
 		cds_list_del_init(&pos->elem_offline);
 
-		rt = shutdown(pos->fd, SHUT_RDWR);
+		//rt = shutdown(pos->fd, SHUT_RDWR);
+		rt = close(pos->fd);
 		if (rt == -1)
-			printf("shutdown: %s\n", strerror(errno));
+			printf("close: %s\n", strerror(errno));
 
 		sf_destruct_session(pos);
 		cds_list_add_tail(&pos->elem_cache, &sm->list_session_cache);
