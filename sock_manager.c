@@ -24,6 +24,11 @@
 #include "tools/common/nofile_ctl.h"
 #include "tools/rwbuf/rwbuf.h"
 
+#if (ENABLE_SSL)
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif//ENABLE_SSL
+
 #define _sm_malloc malloc
 #define _sm_realloc realloc
 #define _sm_free	free
@@ -35,6 +40,8 @@ typedef struct session_flag {
 	int32_t		closed : 1;
 	int32_t		etmod : 1;
 	int32_t		ready : 1;		//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
+	int32_t		tls_handshake : 1;			//是否是ws websocket
+	int32_t		tls : 1;		//是否是wss websocket
 }session_flag_t;
 
 //session manager的状态机
@@ -69,6 +76,8 @@ typedef struct sock_session {
 	uint8_t		rtry_number;	//尝试读的次数
 	//uint8_t		wtry_number;	//尝试写的次数
 	uint64_t	last_active;	//最后一次活跃的时间
+
+	void*		tls_ctx;		//wss使用到的上下文
 
 	session_event_cb		recv_cb;		//可读事件回调
 	session_behavior_t		uevent;			//用户行为
@@ -106,13 +115,28 @@ typedef struct session_manager {
 	static variable
 */
 
-static CDS_LIST_HEAD(_slist_session_cache);
+//static CDS_LIST_HEAD(_slist_session_cache);
 
 
 
 /*
 	static function
 */
+
+//tls错误
+#if (ENABLE_SSL)
+static int32_t sf_tls_err(SSL* ssl, int32_t rc) {
+	int32_t err = SSL_get_error(ssl, rc);
+	//清除当前线程的错误
+	ERR_clear_error();
+
+	//暂时不太搞得清楚其他错误的具体原因
+	//if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+	//	return SSL_ERROR_NONE;
+
+	return err;
+}
+#endif//ENABLE_SSL
 
 //日志相关
 
@@ -257,6 +281,9 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	
 	ss->flag.closed = 0;
 	ss->flag.ready = 0;
+	ss->flag.tls_handshake = 0;
+	ss->flag.tls = 0;
+	ss->tls_ctx = 0;
 
 	if (enable_et) {
 		ss->flag.etmod = ~0;
@@ -313,6 +340,9 @@ static void sf_destruct_session(sock_session_t* ss) {
 	ss->flag.closed = ~0;
 	ss->flag.etmod = 0;
 	ss->flag.ready = 0;
+	ss->flag.tls_handshake = 0;
+	ss->flag.tls = 0;
+	ss->tls_ctx = 0;
 	memset(&ss->uevent, 0, sizeof(session_behavior_t));
 	rwbuf_clear(&ss->wbuf);
 	rwbuf_clear(&ss->rbuf);
@@ -503,6 +533,15 @@ static void sf_del_session(sock_session_t* ss) {
 	if (ss) {
 		sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
 
+#if(ENABLE_SSL)
+		if (ss->tls_ctx) {
+			if (cds_list_empty(&ss->elem_listens))
+				SSL_free(ss->tls_ctx);
+			else
+				SSL_CTX_free(ss->tls_ctx);
+		}
+#endif//ENABLE_SSL
+
 		//发送一个事件给消费线程, 通知断开事件以及尚未发送的数据
 		//...
 
@@ -558,11 +597,14 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		const char* ip = inet_ntoa(c_sin.sin_addr);
 		unsigned short port = ntohs(c_sin.sin_port);
 		//printf("fd: %d\n", c_fd);
-		sock_session_t* css = sm_add_client(ss->sm, c_fd, ip, port, ss->flag.etmod, ss->wbuf.size, 1, ss->uevent, ss->udata, ss->udatalen);
+		sock_session_t* css = sm_add_client(ss->sm, c_fd, ip, port, ss->flag.etmod, ss->wbuf.size, ss->flag.tls, ss->tls_ctx, 1, ss->uevent, ss->udata, ss->udatalen);
 		if (!css) {
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
 			return;
+		}
+		else {
+			printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
 		}
 
 	} while (ss->flag.etmod);
@@ -591,7 +633,7 @@ static void sf_recv_cb(sock_session_t* ss) {
 		int rd = recv(ss->fd, RWBUF_START_PTR(&(ss->rbuf)), buflen, 0);
 		if (rd == -1) {
 			//If there is no data readability
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (errno == EAGAIN) {
 				//if in the recv pending
 				if (cds_list_empty(&ss->elem_pending_recv) == 0)
 					cds_list_del_init(&ss->elem_pending_recv);
@@ -660,6 +702,70 @@ static void sf_recv_cb(sock_session_t* ss) {
 		sf_del_session(ss);
 }
 
+static void sf_tls_recv_cb(sock_session_t* ss) {
+	if (ss->flag.closed)
+		return;
+
+#if (ENABLE_SSL)
+	int32_t rt, err, rd, serr;
+	SSL* ssl = ss->tls_ctx;
+
+	if (ss->flag.tls_handshake) {
+		do {
+			int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
+			rd = SSL_read(ssl, RWBUF_START_PTR(&(ss->rbuf)), buflen);
+
+			//一定出错了
+			if (rd < 0) {
+				rt = sf_tls_err(ssl, rd);
+				err = ERR_get_error();
+
+
+			}
+
+
+			if (rd <= 0) {
+				rt = sf_tls_err(ssl, rd);
+				err = ERR_get_error();
+
+				if (rt == SSL_ERROR_SYSCALL && err == 0) {
+					serr = SERROR_PEER_DISCONN;
+					break;
+				}
+				
+				//不为这3个标识中的任意一个
+				if (rt != SSL_ERROR_NONE || rt != SSL_ERROR_WANT_READ || rt != SSL_ERROR_WANT_WRITE) {
+					printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [Send FIN], tls_err: [%d], glb_err: [%d]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, err);
+				}
+			}
+
+		} while (0);
+
+	}
+	else {
+		//如果握手完成
+		if ((rt = SSL_accept(ss->tls_ctx)) == 1)
+			ss->flag.tls_handshake = ~0;
+		else {
+			rt = sf_tls_err(ssl, rt);
+			err = ERR_get_error();
+			if (rt == SSL_ERROR_SYSCALL && err == 0) {
+				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], tls_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, "reset by peer");
+			}else if (rt == SSL_ERROR_WANT_READ) {
+				printf("TLS WANT READ\n");
+			}
+			//测试一下是否有需要发送的
+			else if (rt == SSL_ERROR_WANT_WRITE) {
+				printf("TLS WANT WRITE\n");
+			}else{
+				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [Send FIN], tls_err: [%d], glb_err: [%d]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, err);
+				sf_del_session(ss);
+			}
+		}
+	}
+#endif//ENABLE_SSL
+}
+
 static void sf_send_cb(sock_session_t* ss) {
 	//如果已经完全关闭, 可能存在半连接,那么剩余的数据也应该尝试发送, 所以这个状态一定要严谨
 	if (ss->flag.closed)
@@ -675,7 +781,7 @@ static void sf_send_cb(sock_session_t* ss) {
 		int32_t sd = send(ss->fd, RWBUF_START_PTR(&ss->wbuf), snd_len, 0);
 		if (sd == -1) {
 			//If the interrupt or the kernel buffer is temporarily full
-			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+			if (errno == EAGAIN || errno == EINTR) {
 				if (cds_list_empty(&ss->elem_pending_send))
 					cds_list_add_tail(&ss->elem_pending_send, &ss->sm->list_pending_send);
 				return;
@@ -869,6 +975,12 @@ session_manager_t* sm_init_manager(uint32_t cache_size) {
 		}
 	}
 
+#if(ENABLE_SSL)
+	SSL_library_init();
+	OpenSSL_add_all_algorithms();
+	SSL_load_error_strings();
+#endif//ENABLE_SSL
+
 	//add default timer
 	//heart cb
 	//ht_add_timer(sm->ht_timer, MAX_HEART_TIMEOUT * 1000, 0, -1, cb_on_heart_timeout, sm);
@@ -902,25 +1014,16 @@ void sm_exit_manager(session_manager_t* sm){
 	//clean resources and all session
 	sock_session_t* pos, * n;
 	cds_list_for_each_entry_safe(pos, n, &sm->list_online, elem_online) {
-		//printf("[%s] [%s:%d] [%s] Clean Online session, ip: [%s], port: [%d] errmsg: [Active cleaning]\n", tools_get_time_format_string(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port);
-		//sm_del_session(pos, 0);
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
 
 	cds_list_for_each_entry_safe(pos, n, &sm->list_servers, elem_servers) {
-		//printf("[%s] [%s:%d] [%s] Clean server session, ip: [%s], port: [%d] errmsg: [Active cleaning]\n", tools_get_time_format_string(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port);
-		//sm_del_session(pos, 0);
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
 
 	cds_list_for_each_entry_safe(pos, n, &sm->list_listens, elem_listens) {
-		//printf("[%s] [%s:%d] [%s] Clean listener session, ip: [%s], port: [%d] errmsg: [Active cleaning]\n", tools_get_time_format_string(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port);
-		//close(pos->fd);
-		//list_del_init(&pos->elem_listens);
-		//s_free_session(sm, pos);
-
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
@@ -936,6 +1039,14 @@ void sm_exit_manager(session_manager_t* sm){
 			_sm_free(pos);
 		}
 	}
+
+#if (ENABLE_SSL)
+	SSL_COMP_free_compression_methods();
+	ERR_remove_state(0);
+	ERR_free_strings();
+	EVP_cleanup();
+	CRYPTO_cleanup_all_ex_data();
+#endif
 
 	/*while (cds_list_empty(&sm->list_session_cache) == 0) {
 		pos = cds_list_entry(sm->list_session_cache.next, struct sock_session, elem_cache);
@@ -1011,7 +1122,111 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	return ss;
 }
 
-sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, 
+sock_session_t* sm_add_tls_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
+	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len) {
+
+	sock_session_t* ss = 0;
+	int rt, err, fd, ev, optval = 1;
+#if(ENABLE_SSL)
+	SSL_CTX* ctx = 0;
+#endif//ENABLE_SSL
+
+	if (!sm) return 0;
+
+	fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
+	if (fd == -1)  return 0;
+
+	struct sockaddr_in sin;
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(port);
+	sin.sin_addr.s_addr = INADDR_ANY;
+
+	rt = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	if (rt == -1)
+		goto add_listen_failed;
+
+	rt = bind(fd, (const struct sockaddr*)&sin, sizeof(sin));
+	if (rt == -1)
+		goto add_listen_failed;
+
+	rt = listen(fd, max_listen);
+	if (rt == -1)
+		goto add_listen_failed;
+
+	ss = sf_cache_session(sm);
+	if (ss == 0)
+		goto add_listen_failed;
+
+	rt = sf_construct_session(sm, ss, fd, enable_et, "0.0.0.0", port, max_send_len, sf_accpet_cb/*accpet_function*/, behavior, udata, udata_len);
+	if (rt != SERROR_OK) 
+		goto add_listen_failed;
+
+#if(ENABLE_SSL)
+	err = 0;
+	if (enable_tls) {
+		if (tls.cert == 0 || tls.key == 0)
+			err = 1;
+
+		ctx = SSL_CTX_new(SSLv23_server_method());
+		if (!ctx)
+			err = SERROR_TLS_MLC_ERR;
+
+		//加载CA证书
+		if (err== 0 && tls.ca) {
+			SSL_CTX_set_verify(ctx, SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+			if (rt = SSL_CTX_load_verify_locations(ctx, tls.ca, NULL) != 1)
+				err = SERROR_TLS_CA_ERR;
+		}
+
+		//加载自己的证书
+		if (err == 0 && (rt = SSL_CTX_use_certificate_file(ctx, tls.cert, SSL_FILETYPE_PEM)) != 1)
+			err = SERROR_TLS_CERT_ERR;
+
+		//加载私钥
+		if (err == 0 && (rt = SSL_CTX_use_PrivateKey_file(ctx, tls.key, SSL_FILETYPE_PEM)) != 1)
+			err = SERROR_TLS_KEY_ERR;
+
+		//判断私钥是否正确
+		if (err == 0 && (rt = SSL_CTX_check_private_key(ctx)) != 1)
+			err = SERROR_TLS_CHECK_ERR;
+
+		if (err) {
+			//打印错误, 并且清理当前线程的错误
+			printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, err);
+			if (ctx)
+				SSL_CTX_free(ctx);
+			ERR_clear_error();
+			goto add_listen_failed;
+		}
+
+		ss->flag.tls = ~0;
+		ss->tls_ctx = ctx;
+	}
+#else
+	if (enable_tls) 
+		goto add_listen_failed;
+#endif//ENABLE_SSL	
+
+	//add epoll status
+	ev = (enable_et ? EV_ET : 0) | EV_RECV;
+
+	rt = sf_add_event(sm, ss, ev);
+	if (rt)
+		goto add_listen_failed;
+
+	//add to listener list
+	cds_list_add_tail(&(ss->elem_listens), &(sm->list_listens));
+	return ss;
+
+add_listen_failed:
+	if(fd != -1)
+		close(fd);
+	if(ss)
+		sf_free_session(sm, ss);
+	return 0;
+}
+
+sock_session_t* sm_add_client3(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, 
 	uint32_t max_send_len, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	if (!sm || fd < 0)
@@ -1036,6 +1251,94 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 	if(add_online)
 		cds_list_add_tail(&(ss->elem_online), &(sm->list_online));
 	return ss;
+}
+
+sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+	uint8_t enable_tls, void* server_ctx, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len) {
+
+	if (!sm || fd < 0)
+		return 0;
+
+	int32_t rt, err = 0;
+	sock_session_t* ss = sf_cache_session(sm);
+	if (!ss)
+		return 0;
+
+	rt = sf_construct_session(sm, ss, fd, enable_et, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, behavior, udata, udata_len);
+	if (rt != SERROR_OK)
+		goto add_client_failed;
+
+#if (ENABLE_SSL)
+	SSL* ssl = 0;
+	if (enable_tls) {
+		ssl = SSL_new(server_ctx);
+		if (err == 0 && !ssl)
+			err = 1;
+
+		if (err == 0 && (rt = SSL_set_session_id_context(ssl, SSL_SESSION_ID, strlen(SSL_SESSION_ID))) != 1)
+			err = 2;
+
+		if (err == 0 && (rt = SSL_set_fd(ssl, fd)) != 1)
+			err = 3;
+
+		if (enable_et)
+			SSL_set_accept_state(ssl);
+		
+
+		/*
+		*	此处设计为非阻塞的SSL_accept
+		*	原因: SSL_accept接收一个client hello, 但是对端如果只是连接, 
+			但没有按照tls协议上传加密算法列表, 将阻塞在此处. 这是一个严重的问题
+		*/
+		if (err == 0) {
+			if ((rt = SSL_accept(ssl)) != 1) {
+				if (SSL_get_error(ssl, rt) != SSL_ERROR_WANT_READ)
+					err = 4;
+			}
+			else
+				ss->flag.tls_handshake = ~0;	//设置为已完成握手, 但是一般不在这里完成
+		}
+
+		if (err)
+			goto add_client_failed;
+		
+		
+		SSL_set_options(ssl, SSL_OP_NO_SSLv2);
+		SSL_set_options(ssl, SSL_OP_NO_SSLv3);
+		SSL_set_options(ssl, SSL_OP_NO_TLSv1);
+		SSL_set_options(ssl, SSL_OP_NO_TLSv1_2);
+
+		//回调函数改为tls
+		ss->recv_cb = sf_tls_recv_cb;
+	}
+#endif//ENABLE_SSL
+
+	//add epoll status
+	int ev = (enable_et ? EV_ET : 0) | EV_RECV;
+	rt = sf_add_event(sm, ss, ev);
+	if (rt) 
+		goto add_client_failed;
+
+#if (ENABLE_SSL)
+	ss->tls_ctx = ssl;
+	ss->flag.tls = ~0;
+#endif//ENABLE_SSL
+
+	//add to online list
+	if (add_online)
+		cds_list_add_tail(&(ss->elem_online), &(sm->list_online));
+	return ss;
+
+add_client_failed:
+#if (ENABLE_SSL)
+	if (enable_tls && ssl)
+		SSL_free(ssl);
+#endif//ENABLE_SSL
+
+	if(ss)
+		sf_free_session(sm, ss);
+
+	return 0;
 }
 
 sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
@@ -1100,6 +1403,7 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 
 	if (fd != -1)
 		close(fd);
+
 	return 0;
 }
 

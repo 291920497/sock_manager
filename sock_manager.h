@@ -11,6 +11,12 @@
 #include <stdlib.h>
 
 
+#define ENABLE_SSL 1
+
+#if (ENABLE_SSL)
+#define SSL_SESSION_ID "sock_manager"
+#endif//ENABLE_SSL
+
 #ifndef MAX_EPOLL_SIZE
 #define MAX_EPOLL_SIZE 512
 #endif//MAX_EPOLL_SIZE
@@ -37,6 +43,12 @@ typedef struct session_behavior {
 	session_complate_pkg_cb	complate_cb;	//解包成功回调
 }session_behavior_t;
 
+typedef struct session_tls {
+	const char* ca;							//ca证书路径
+	const char* cert;						//证书路径
+	const char* key;						//证书密钥路径
+}session_tls_t;
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,8 +67,14 @@ void sm_set_run(session_manager_t* sm, uint8_t run);
 sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len, 
 	session_behavior_t behavior, void* udata, uint8_t udata_len);
 
-sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len, 
+sock_session_t* sm_add_tls_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
+	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+sock_session_t* sm_add_client3(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len, 
 	uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+	uint8_t enable_tls, void* server_ctx, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
 sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
 	session_behavior_t behavior, void* udata, uint8_t udata_len);

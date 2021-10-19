@@ -36,6 +36,8 @@ int32_t rwbuf_aband_front(rwbuf_t* rwb, uint32_t aband_len);
 
 int32_t rwbuf_replan(rwbuf_t* rwb);
 
+void rwbuf_swap(rwbuf_t* l, rwbuf_t* r);
+
 void rwbuf_clear(rwbuf_t* rwb);
 
 #ifdef __cplusplus

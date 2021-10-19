@@ -93,6 +93,13 @@ int32_t rwbuf_replan(rwbuf_t* rwb) {
 	return SERROR_OK;
 }
 
+void rwbuf_swap(rwbuf_t* l, rwbuf_t* r) {
+	rwbuf_t t;
+	memcpy(&t, l, sizeof(rwbuf_t));
+	memcpy(l, r, sizeof(rwbuf_t));
+	memcpy(r, &t, sizeof(rwbuf_t));
+}
+
 void rwbuf_clear(rwbuf_t* rwb) {
 	if (rwb) {
 		rwb->offset = 0;
