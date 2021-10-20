@@ -13,6 +13,9 @@
 #define SERROR_TLS_CERT_ERR		(-101)	//证书文件加载失败
 #define SERROR_TLS_KEY_ERR		(-102)	//私钥加载失败
 #define SERROR_TLS_CHECK_ERR	(-103)	//私钥校验失败
+#define SERROR_TLS_WARCLS_ERR	(-104)	//因出现关闭警告关闭套接字, 一般为对端调用了SSL_shutdown
+#define SERROR_TLS_SSL_ERR		(-105)	//协议发生错误
+#define SERROR_TLS_LIB_ERR		(-106)	//错误码参照ssl.h:1813, 结合ERR_get_error返回的错误码判断真实原因
 
 #define SERROR_SM_UNINIT		(-999)		//session manager尚未初始化
 

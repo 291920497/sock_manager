@@ -39,9 +39,11 @@
 typedef struct session_flag {
 	int32_t		closed : 1;
 	int32_t		etmod : 1;
-	int32_t		ready : 1;		//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
+	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
 	int32_t		tls_handshake : 1;			//是否是ws websocket
-	int32_t		tls : 1;		//是否是wss websocket
+	int32_t		tls : 1;					//是否是wss websocket
+	int32_t		tls_rwantw : 1;				//是否想在可读事件发生的时候调用SSL_write
+	int32_t		tls_wwantr : 1;				//是否期望在可写事件发生的时候调用SSL_read
 }session_flag_t;
 
 //session manager的状态机
@@ -283,6 +285,8 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->flag.ready = 0;
 	ss->flag.tls_handshake = 0;
 	ss->flag.tls = 0;
+	ss->flag.tls_rwantw = 0;
+	ss->flag.tls_wwantr = 0;
 	ss->tls_ctx = 0;
 
 	if (enable_et) {
@@ -342,6 +346,8 @@ static void sf_destruct_session(sock_session_t* ss) {
 	ss->flag.ready = 0;
 	ss->flag.tls_handshake = 0;
 	ss->flag.tls = 0;
+	ss->flag.tls_rwantw = 0;
+	ss->flag.tls_wwantr = 0;
 	ss->tls_ctx = 0;
 	memset(&ss->uevent, 0, sizeof(session_behavior_t));
 	rwbuf_clear(&ss->wbuf);
@@ -492,8 +498,7 @@ static void sf_timer_reconn_cb(uint32_t timer_id, void* p) {
 			}
 			else {
 				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
-			}
-				
+			}	
 		}
 	}
 }
@@ -539,6 +544,7 @@ static void sf_del_session(sock_session_t* ss) {
 				SSL_free(ss->tls_ctx);
 			else
 				SSL_CTX_free(ss->tls_ctx);
+			ss->tls_ctx = 0;
 		}
 #endif//ENABLE_SSL
 
@@ -601,6 +607,7 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		if (!css) {
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
+			close(c_fd);
 			return;
 		}
 		else {
@@ -614,7 +621,7 @@ static void sf_recv_cb(sock_session_t* ss) {
 	if (ss->flag.closed)
 		return;
 
-	int rt;
+	int rt, eno;
 	do {
 		int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
 
@@ -632,15 +639,16 @@ static void sf_recv_cb(sock_session_t* ss) {
 
 		int rd = recv(ss->fd, RWBUF_START_PTR(&(ss->rbuf)), buflen, 0);
 		if (rd == -1) {
+			eno = errno;
 			//If there is no data readability
-			if (errno == EAGAIN) {
+			if (eno == EAGAIN) {
 				//if in the recv pending
 				if (cds_list_empty(&ss->elem_pending_recv) == 0)
 					cds_list_del_init(&ss->elem_pending_recv);
 				return;
 			}
 			//If it is caused by interruption
-			else if (errno == EINTR) {
+			else if (eno == EINTR) {
 				//if not recv pending
 				if (cds_list_empty(&ss->elem_pending_recv))
 					cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
@@ -678,15 +686,6 @@ static void sf_recv_cb(sock_session_t* ss) {
 		return;
 	} while (0);
 	
-	//sm_del_session 并标注原因
-	/*if (rt == SERROR_SYSAPI_ERR) {
-		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, strerror(errno));
-	}
-	else if (rt == SERROR_PEER_DISCONN) {
-		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, "client disconnect");
-	}*/
-
-
 	if (rt == SERROR_SYSAPI_ERR)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
 
@@ -702,67 +701,249 @@ static void sf_recv_cb(sock_session_t* ss) {
 		sf_del_session(ss);
 }
 
+/*
+	这个函数作为代码复用, 所以将涉及到session的操作, 这会影响tls的标识
+	成功: SERROR_OK
+	失败: 返回serror.h 中的错误码, 可能将结合ssl库的错误定位真实错误原因
+*/
+static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, int32_t* out_tls_err) {
+	int rt, err, serr, eno;
+#if (ENABLE_SSL)
+	SSL* ssl = ss->tls_ctx;
+	rt = sf_tls_err(ssl, rd);
+	*out_tls_err = rt;
+	err = ERR_get_error();
+	
+	switch (rt) {
+		//tls 协议已经出现关闭警告
+	case SSL_ERROR_ZERO_RETURN:
+		serr = SERROR_TLS_WARCLS_ERR;
+		break;
+		//协议错误
+	case SSL_ERROR_SSL:
+		serr = SERROR_TLS_SSL_ERR;
+		break;
+	}
+
+	//判断是否出现致命性错误
+	if (serr)
+		return serr;
+
+	//判断是否为底层传输协议出错
+	if (rt == SSL_ERROR_SYSCALL) {
+		//表示没有出现错误, 那么是底层传输协议错误
+		if (err == 0) {
+			serr = SERROR_PEER_DISCONN;
+			return serr;
+		}
+
+		eno = errno;
+		//If there is no data readability
+		if (eno == EAGAIN) {
+			//if in the recv pending
+			if (cds_list_empty(&ss->elem_pending_recv) == 0)
+				cds_list_del_init(&ss->elem_pending_recv);
+			return SERROR_OK;
+		}
+		//If it is caused by interruption
+		else if (eno == EINTR) {
+			//if not recv pending
+			if (cds_list_empty(&ss->elem_pending_recv))
+				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
+			return SERROR_OK;
+		}
+
+		//其他错误, 应该关闭
+		serr = SERROR_SYSAPI_ERR;
+		return serr;
+	}
+
+	//如果出现了重新协商, 希望在可写事件发生时再次调用SSL_read
+	if (rt == SSL_ERROR_WANT_WRITE) {
+		ss->flag.tls_wwantr = ~0;
+
+		//添加可写事件
+		if(sf_add_event(ss->sm, ss, EV_WRITE) == 0)
+			return SERROR_OK;
+
+		return SERROR_SYSAPI_ERR;
+	}
+
+	//如果希望再次调用
+	if (rt == SSL_ERROR_WANT_READ) {
+		/*if (cds_list_empty(&ss->elem_pending_recv))
+			cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);*/
+		return SERROR_OK;
+	}
+
+	//如果都不是以上情况, 那么应该关闭并从SSL库中获取错误信息
+	//打印错误
+	serr = SERROR_TLS_LIB_ERR;
+#endif
+	return serr;
+}
+
+static int32_t sf_tls_send_err(sock_session_t* ss, int32_t sd, int32_t* out_tls_err) {
+	int rt, err, serr, eno;
+#if (ENABLE_SSL)
+	SSL* ssl = ss->tls_ctx;
+	rt = sf_tls_err(ssl, sd);
+	*out_tls_err = rt;
+	err = ERR_get_error();
+
+	switch (rt) {
+		//tls 协议已经出现关闭警告
+	case SSL_ERROR_ZERO_RETURN:
+		serr = SERROR_TLS_WARCLS_ERR;
+		break;
+		//协议错误
+	case SSL_ERROR_SSL:
+		serr = SERROR_TLS_SSL_ERR;
+		break;
+	}
+
+	//判断是否出现致命性错误
+	if (serr)
+		return serr;
+
+	//判断是否为底层传输协议出错
+	if (rt == SSL_ERROR_SYSCALL) {
+		//表示没有出现错误, 那么是底层传输协议错误
+		if (err == 0) {
+			serr = SERROR_PEER_DISCONN;
+			return serr;
+		}
+
+		eno = errno;
+		//If there is no data readability
+		if (eno == EAGAIN) {
+			//if in the recv pending
+			if (cds_list_empty(&ss->elem_pending_send) == 0)
+				cds_list_del_init(&ss->elem_pending_send);
+			return SERROR_OK;
+		}
+		//If it is caused by interruption
+		else if (eno == EINTR) {
+			//if not recv pending
+			if (cds_list_empty(&ss->elem_pending_send))
+				cds_list_add_tail(&ss->elem_pending_send, &ss->sm->list_pending_send);
+			return SERROR_OK;
+		}
+
+		//其他错误, 应该关闭
+		serr = SERROR_SYSAPI_ERR;
+		return serr;
+	}
+
+	//如果出现了重新协商, 希望在可写事件发生时再次调用SSL_read
+	if (rt == SSL_ERROR_WANT_WRITE) {
+		//添加可写事件
+		if (sf_add_event(ss->sm, ss, EV_WRITE) == 0)
+			return SERROR_OK;
+
+		return SERROR_SYSAPI_ERR;
+	}
+
+	//如果在可读事件中调用
+	if (rt == SSL_ERROR_WANT_READ) {
+		//recv事件一直在, 静等回调即可
+		ss->flag.tls_rwantw = ~0;
+		return SERROR_OK;
+	}
+
+	//如果都不是以上情况, 那么应该关闭并从SSL库中获取错误信息
+	//打印错误
+	serr = SERROR_TLS_LIB_ERR;
+#endif
+	return serr;
+}
+
+
+//这个函数需要用到
+static void sf_tls_send_cb(sock_session_t* ss);
 static void sf_tls_recv_cb(sock_session_t* ss) {
 	if (ss->flag.closed)
 		return;
 
 #if (ENABLE_SSL)
-	int32_t rt, err, rd, serr;
+	int32_t rt, err, eno, rd, serr = 0;
 	SSL* ssl = ss->tls_ctx;
 
-	if (ss->flag.tls_handshake) {
-		do {
+	//是否正在重新协商
+	if (ss->flag.tls_rwantw) {
+		//立即还原可写事件调用读
+		ss->flag.tls_wwantr = 0;
+		sf_tls_send_cb(ss);
+		return;
+	}
+
+	do {
+		if (ss->flag.tls_handshake) {
 			int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
 			rd = SSL_read(ssl, RWBUF_START_PTR(&(ss->rbuf)), buflen);
-
-			//一定出错了
-			if (rd < 0) {
-				rt = sf_tls_err(ssl, rd);
-				err = ERR_get_error();
-
-
-			}
-
-
 			if (rd <= 0) {
-				rt = sf_tls_err(ssl, rd);
-				err = ERR_get_error();
+				serr = sf_tls_read_err(ss, rd, &rt);
+				//预期内的错误
+				if (serr == SERROR_OK)
+					return;
 
-				if (rt == SSL_ERROR_SYSCALL && err == 0) {
-					serr = SERROR_PEER_DISCONN;
-					break;
-				}
-				
-				//不为这3个标识中的任意一个
-				if (rt != SSL_ERROR_NONE || rt != SSL_ERROR_WANT_READ || rt != SSL_ERROR_WANT_WRITE) {
-					printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [Send FIN], tls_err: [%d], glb_err: [%d]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, err);
-				}
+				break;
 			}
 
-		} while (0);
+			if (rd < buflen) {
+				//如何读到的长度不等于提供的的长度, 那么说明读完了, 从未决队列中移除
+				if (cds_list_empty(&ss->elem_pending_recv) == 0)
+					cds_list_del_init(&ss->elem_pending_recv);
+			}
+			else {
+				//如果读到的长度等于了提供的长度, 那么可能存在没读完的情况,按照EINTR处理
+				if (cds_list_empty(&ss->elem_pending_recv))
+					cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
+			}
 
-	}
-	else {
-		//如果握手完成
-		if ((rt = SSL_accept(ss->tls_ctx)) == 1)
-			ss->flag.tls_handshake = ~0;
-		else {
-			rt = sf_tls_err(ssl, rt);
-			err = ERR_get_error();
-			if (rt == SSL_ERROR_SYSCALL && err == 0) {
-				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], tls_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, "reset by peer");
-			}else if (rt == SSL_ERROR_WANT_READ) {
-				printf("TLS WANT READ\n");
-			}
-			//测试一下是否有需要发送的
-			else if (rt == SSL_ERROR_WANT_WRITE) {
-				printf("TLS WANT WRITE\n");
-			}else{
-				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [Send FIN], tls_err: [%d], glb_err: [%d]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, err);
-				sf_del_session(ss);
-			}
+			//修改接收缓冲区的长度, 不额外提供接口
+			ss->rbuf.len += rd;
+			//重置读尝试的次数
+			ss->rtry_number = 0;
+			return;
 		}
+		else {
+			//如果握手完成
+			if ((rd = SSL_accept(ss->tls_ctx)) == 1) {
+				ss->flag.tls_handshake = ~0;
+				return;
+			}
+			
+			serr = sf_tls_read_err(ss, rd, &rt);
+			//预期内的错误
+			if (serr == SERROR_OK)
+				return;
+
+			break;
+		}
+	} while (0);
+
+
+	switch (serr) {
+	case SERROR_SYSAPI_ERR:
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
+		break;
+	case SERROR_PEER_DISCONN:
+#ifdef TEST_CODE
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+#endif//TEST_CODE
+		break;
+		//以下都是SSL的错误了
+	default:
+		SSL_shutdown(ssl);
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], ssl_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, err, "Active shutdown");
 	}
+
+	if (cds_list_empty(&ss->elem_servers))
+		sm_del_session(ss);
+	else
+		sf_del_session(ss);
+
 #endif//ENABLE_SSL
 }
 
@@ -772,12 +953,12 @@ static void sf_send_cb(sock_session_t* ss) {
 		return;
 
 	//uint32_t len = RWBUF_GET_LEN(&ss->wbuf);
-	int rt;
+	int32_t rt;
 	do {
 		uint32_t snd_len = RWBUF_GET_LEN(&ss->wbuf);
 		if (!snd_len)
 			return;
-	
+
 		int32_t sd = send(ss->fd, RWBUF_START_PTR(&ss->wbuf), snd_len, 0);
 		if (sd == -1) {
 			//If the interrupt or the kernel buffer is temporarily full
@@ -814,9 +995,9 @@ static void sf_send_cb(sock_session_t* ss) {
 			rwbuf_replan(&ss->wbuf);
 
 			//add send pending
-			if (cds_list_empty(&ss->elem_pending_send)) 
+			if (cds_list_empty(&ss->elem_pending_send))
 				cds_list_add_tail(&ss->elem_pending_send, &ss->sm->list_pending_send);
-				
+
 		}
 		else {
 			sf_del_event(ss->sm, ss, EV_WRITE);
@@ -828,7 +1009,7 @@ static void sf_send_cb(sock_session_t* ss) {
 		//ok
 		return;
 	} while (0);
-	
+
 	//failed;
 	//sm_del_session
 	//sm_del_session 并标注原因
@@ -839,12 +1020,11 @@ static void sf_send_cb(sock_session_t* ss) {
 		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, "client disconnect");
 	}
 	sm_del_session(ss);*/
-	
+
 	if (rt == SERROR_SYSAPI_ERR)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
-
+	else if (rt == SERROR_PEER_DISCONN)
 #ifdef TEST_CODE
-	else if(rt == SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
 #endif//TEST_CODE
 
@@ -856,6 +1036,85 @@ static void sf_send_cb(sock_session_t* ss) {
 		sf_del_session(ss);
 }
 
+static void sf_tls_send_cb(sock_session_t* ss) {
+	if (ss->flag.closed)
+		return;
+
+#if (ENABLE_SSL)
+	int32_t rt, snd_len, err, eno, sd, serr = 0;
+	SSL* ssl = ss->tls_ctx;
+
+	//是否正在重新协商
+	if (ss->flag.tls_wwantr) {
+		//立即还原可写事件调用读
+		ss->flag.tls_wwantr = 0;
+		sf_tls_recv_cb(ss);
+		return;
+	}
+
+	do {
+		snd_len = RWBUF_GET_LEN(&ss->wbuf);
+		//没有数据可以发送, 这里不在外面判断, 为了应对TLS的重新协商
+		if (!snd_len) return;
+
+		sd = SSL_write(ssl, RWBUF_START_PTR(&ss->wbuf), snd_len);
+		if (sd <= 0) {
+			//写判断错误
+			serr = sf_tls_send_err(ss, sd, &rt);
+			//预期内的错误
+			if (serr == SERROR_OK)
+				return;
+
+			break;
+		}
+
+		rwbuf_aband_front(&ss->wbuf, sd);
+		//if not complated, 如果请求发送的长度 > 成功发送的长度, 那么任务尚未完成
+		if (snd_len - sd) {
+			if (sf_add_event(ss->sm, ss, EV_WRITE) != 0) {
+				serr = SERROR_SYSAPI_ERR;
+				break;
+			}
+
+			rwbuf_replan(&ss->wbuf);
+
+			//add send pending
+			if (cds_list_empty(&ss->elem_pending_send))
+				cds_list_add_tail(&ss->elem_pending_send, &ss->sm->list_pending_send);
+		}
+		else {
+			sf_del_event(ss->sm, ss, EV_WRITE);
+			//remove send pending
+			if (cds_list_empty(&ss->elem_pending_send) == 0)
+				cds_list_del_init(&ss->elem_pending_send);
+		}
+
+		return;
+	} while (0);
+	
+	switch (serr) {
+	case SERROR_SYSAPI_ERR:
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
+		break;
+	case SERROR_PEER_DISCONN:
+#ifdef TEST_CODE
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+#endif//TEST_CODE
+		break;
+		//以下都是SSL的错误了
+	default:
+		SSL_shutdown(ssl);
+		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], ssl_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, err, "Active shutdown");
+	}
+
+	if (cds_list_empty(&ss->elem_servers))
+		sm_del_session(ss);
+	else
+		sf_del_session(ss);
+
+#endif//ENABLE_SSL
+}
+
 
 
 //处理写未决
@@ -865,19 +1124,15 @@ static void sf_pending_send(session_manager_t* sm) {
 		if (cds_list_empty(&sm->list_pending_send) == 0) {
 			cds_list_for_each_entry_safe(ss, n, &sm->list_pending_send, elem_pending_send) {
 				//减少不必要的函数调用
-				if (ss->flag.closed == 0 && RWBUF_GET_LEN(&ss->wbuf))
-					sf_send_cb(ss);
-				/*else if(RWBUF_GET_LEN(&ss->wbuf) == 0){
-					if (++ss->wtry_number > 8) {
-						if (cds_list_empty(&ss->elem_servers))
-							sm_del_session(ss);
-						else
-							sf_del_session(ss);
-
-						printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-					}
-				}*/
-					
+				//if (ss->flag.closed == 0 && RWBUF_GET_LEN(&ss->wbuf))
+				
+				//迎合tls, 不对写入长度做判断, 应该真正写入的数据可能在Bio中
+				if (ss->flag.closed == 0) {
+					if (ss->flag.tls)
+						sf_tls_send_cb(ss);
+					else
+						sf_send_cb(ss);
+				}			
 			}
 		}
 	}
@@ -1071,58 +1326,8 @@ void sm_set_run(session_manager_t* sm, uint8_t run) {
 	}
 }
 
-sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len, 
-	session_behavior_t behavior, void* udata, uint8_t udata_len) {
-	sock_session_t* ss = 0;
-	int rt, fd, ev, optval = 1;
 
-	if (!sm) return ss;
-
-	fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
-	if (fd == -1)  return 0;
-
-	struct sockaddr_in sin;
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(port);
-	sin.sin_addr.s_addr = INADDR_ANY;
-
-	rt = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-	if (rt == -1) 
-		return 0;
-
-	rt = bind(fd, (const struct sockaddr*)&sin, sizeof(sin));
-	if (rt == -1)
-		return 0;
-
-	rt = listen(fd, max_listen);
-	if (rt == -1)
-		return 0;
-
-	ss = sf_cache_session(sm);
-	if (ss == 0)
-		return 0;
-
-	rt = sf_construct_session(sm, ss, fd, enable_et, "0.0.0.0", port, max_send_len, sf_accpet_cb/*accpet_function*/, behavior, udata, udata_len);
-	if (rt != SERROR_OK) {
-		sf_free_session(sm, ss);
-		return 0;
-	}
-
-	//add epoll status
-	ev = (enable_et ? EV_ET : 0) | EV_RECV;
-
-	rt = sf_add_event(sm, ss, ev);
-	if (rt) {
-		sf_free_session(sm, ss);
-		return 0;
-	}
-
-	//add to listener list
-	cds_list_add_tail(&(ss->elem_listens), &(sm->list_listens));
-	return ss;
-}
-
-sock_session_t* sm_add_tls_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
 	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	sock_session_t* ss = 0;
@@ -1198,6 +1403,8 @@ sock_session_t* sm_add_tls_listen(session_manager_t* sm, uint16_t port, uint32_t
 			ERR_clear_error();
 			goto add_listen_failed;
 		}
+		//设置即使由这个ctx创建的ssl即使写入部分也将返回
+		//SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
 		ss->flag.tls = ~0;
 		ss->tls_ctx = ctx;
@@ -1224,33 +1431,6 @@ add_listen_failed:
 	if(ss)
 		sf_free_session(sm, ss);
 	return 0;
-}
-
-sock_session_t* sm_add_client3(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, 
-	uint32_t max_send_len, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len) {
-
-	if (!sm || fd < 0)
-		return 0;
-
-	sock_session_t* ss = sf_cache_session(sm);
-	if (!ss)
-		return 0;
-
-	int32_t rt = sf_construct_session(sm, ss, fd, enable_et, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, behavior, udata, udata_len);
-
-	//add epoll status
-	int ev = (enable_et ? EV_ET : 0) | EV_RECV;
-
-	rt = sf_add_event(sm, ss, ev);
-	if (rt) {
-		sf_free_session(sm, ss);
-		return 0;
-	}
-
-	//add to online list
-	if(add_online)
-		cds_list_add_tail(&(ss->elem_online), &(sm->list_online));
-	return ss;
 }
 
 sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
@@ -1305,8 +1485,9 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 		
 		SSL_set_options(ssl, SSL_OP_NO_SSLv2);
 		SSL_set_options(ssl, SSL_OP_NO_SSLv3);
-		SSL_set_options(ssl, SSL_OP_NO_TLSv1);
+		SSL_set_options(ssl, SSL_OP_NO_TLSv1_1);
 		SSL_set_options(ssl, SSL_OP_NO_TLSv1_2);
+		//SSL_set_options(ssl, SSL_OP_NO_TLSv1);
 
 		//回调函数改为tls
 		ss->recv_cb = sf_tls_recv_cb;
@@ -1464,7 +1645,10 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 			ss->recv_cb(ss);
 		}
 		if (events[i].events & EPOLLOUT) {
-			sf_send_cb(ss);
+			if (ss->flag.tls)
+				sf_tls_send_cb(ss);
+			else
+				sf_send_cb(ss);
 		}
 	}
 
