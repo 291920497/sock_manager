@@ -64,13 +64,13 @@ void sm_exit_manager(session_manager_t* sm);
 
 void sm_set_run(session_manager_t* sm, uint8_t run);
 
-sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
 	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
-sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
 	uint8_t enable_tls, void* server_ctx, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
-sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
 	session_behavior_t behavior, void* udata, uint8_t udata_len);
 
 uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, void(*timer_cb)(uint32_t, void*), void* udata, uint8_t udata_len);

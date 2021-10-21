@@ -38,7 +38,7 @@
 //sock_session 的状态机
 typedef struct session_flag {
 	int32_t		closed : 1;
-	int32_t		etmod : 1;
+//	int32_t		etmod : 1;
 	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
 	int32_t		tls_handshake : 1;			//是否是ws websocket
 	int32_t		tls : 1;					//是否是wss websocket
@@ -264,7 +264,7 @@ static uint32_t sf_uuidhash() {
 
 
 //构建sock_session_t
-static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, uint8_t enable_et, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
+static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
 	int rt;
 
 	if (!ss || !sm || udata_len > MAX_USERDATA_LEN)
@@ -289,10 +289,7 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->flag.tls_wwantr = 0;
 	ss->tls_ctx = 0;
 
-	if (enable_et) {
-		ss->flag.etmod = ~0;
-		nofile_set_nonblocking(fd);
-	}
+	nofile_set_nonblocking(fd);
 
 	if (udata && udata_len)
 		memcpy(&ss->udata, &udata, udata_len);
@@ -342,7 +339,7 @@ static void sf_destruct_session(sock_session_t* ss) {
 	//ss->wtry_number = 0;
 
 	ss->flag.closed = ~0;
-	ss->flag.etmod = 0;
+//	ss->flag.etmod = 0;
 	ss->flag.ready = 0;
 	ss->flag.tls_handshake = 0;
 	ss->flag.tls = 0;
@@ -450,8 +447,8 @@ static int32_t sf_reconnect_server(sock_session_t* ss) {
 	sin.sin_addr.s_addr = inet_addr(ss->ip);
 
 	ss->fd = fd;
-	if (ss->flag.etmod)
-		nofile_set_nonblocking(fd);
+//	if (ss->flag.etmod)
+	nofile_set_nonblocking(fd);
 
 	rt = connect(ss->fd, (const struct sockaddr*)&sin, sizeof(sin));
 	//if connect error
@@ -462,7 +459,8 @@ static int32_t sf_reconnect_server(sock_session_t* ss) {
 	}
 	else {
 		//add epoll status
-		ev = (ss->flag.etmod ? EV_ET : 0) | EV_RECV;
+		//ev = (ss->flag.etmod ? EV_ET : 0) | EV_RECV;
+		ev = EV_ET | EV_RECV;
 		rt = sf_add_event(ss->sm, ss, ev);
 		if (rt != SERROR_OK)
 			return SERROR_SYSAPI_ERR;
@@ -487,11 +485,7 @@ static void sf_timer_reconn_cb(uint32_t timer_id, void* p) {
 		if (ss->flag.closed) {
 			rt = sf_reconnect_server(ss);
 			if (rt == SERROR_OK) {
-				if (ss->flag.etmod)
-					msg = einprogress;
-				else
-					msg = success;
-
+				msg = einprogress;
 #if TEST_CODE
 				printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, msg);
 #endif
@@ -603,7 +597,7 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		const char* ip = inet_ntoa(c_sin.sin_addr);
 		unsigned short port = ntohs(c_sin.sin_port);
 		//printf("fd: %d\n", c_fd);
-		sock_session_t* css = sm_add_client(ss->sm, c_fd, ip, port, ss->flag.etmod, ss->wbuf.size, ss->flag.tls, ss->tls_ctx, 1, ss->uevent, ss->udata, ss->udatalen);
+		sock_session_t* css = sm_add_client(ss->sm, c_fd, ip, port, ss->wbuf.size, ss->flag.tls, ss->tls_ctx, 1, ss->uevent, ss->udata, ss->udatalen);
 		if (!css) {
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
@@ -614,7 +608,7 @@ static void sf_accpet_cb(sock_session_t* ss) {
 			printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
 		}
 
-	} while (ss->flag.etmod);
+	} while (1);
 }
 
 static void sf_recv_cb(sock_session_t* ss) {
@@ -668,6 +662,10 @@ static void sf_recv_cb(sock_session_t* ss) {
 				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
 		}*/
 
+		if (cds_list_empty(&ss->elem_pending_recv))
+			cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
+
+		/*
 		if (rd < buflen) {
 			//如何读到的长度不等于提供的的长度, 那么说明读完了, 从未决队列中移除
 			if (cds_list_empty(&ss->elem_pending_recv) == 0)
@@ -678,6 +676,7 @@ static void sf_recv_cb(sock_session_t* ss) {
 			if (cds_list_empty(&ss->elem_pending_recv))
 				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
 		}
+		*/
 
 		//修改接收缓冲区的长度, 不额外提供接口
 		ss->rbuf.len += rd;
@@ -713,7 +712,7 @@ static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, int32_t* out_tls_
 	rt = sf_tls_err(ssl, rd);
 	*out_tls_err = rt;
 	err = ERR_get_error();
-	
+
 	switch (rt) {
 		//tls 协议已经出现关闭警告
 	case SSL_ERROR_ZERO_RETURN:
@@ -769,10 +768,10 @@ static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, int32_t* out_tls_
 		return SERROR_SYSAPI_ERR;
 	}
 
-	//如果希望再次调用
+	//如何希望下次可读事件发生时再调用, 清除未决队列
 	if (rt == SSL_ERROR_WANT_READ) {
-		/*if (cds_list_empty(&ss->elem_pending_recv))
-			cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);*/
+		if (cds_list_empty(&ss->elem_pending_recv) == 0)
+			cds_list_del_init(&ss->elem_pending_recv);
 		return SERROR_OK;
 	}
 
@@ -890,16 +889,13 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 				break;
 			}
 
-			if (rd < buflen) {
-				//如何读到的长度不等于提供的的长度, 那么说明读完了, 从未决队列中移除
-				if (cds_list_empty(&ss->elem_pending_recv) == 0)
-					cds_list_del_init(&ss->elem_pending_recv);
-			}
-			else {
-				//如果读到的长度等于了提供的长度, 那么可能存在没读完的情况,按照EINTR处理
-				if (cds_list_empty(&ss->elem_pending_recv))
-					cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
-			}
+			/*
+				再尝试读取一次, 预防以下情况
+				1. 多个包一起到达, 但在ET模式下作为一次事件通知
+				2. FIN报文携带数据
+			*/
+			if (cds_list_empty(&ss->elem_pending_recv))
+				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
 
 			//修改接收缓冲区的长度, 不额外提供接口
 			ss->rbuf.len += rd;
@@ -1010,16 +1006,6 @@ static void sf_send_cb(sock_session_t* ss) {
 		return;
 	} while (0);
 
-	//failed;
-	//sm_del_session
-	//sm_del_session 并标注原因
-	/*if (rt == SERROR_SYSAPI_ERR) {
-		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, strerror(errno));
-	}
-	else if (rt == SERROR_PEER_DISCONN) {
-		printf("ip: [%s], port: [%d], msg: [%s]\n", ss->ip, ss->port, "client disconnect");
-	}
-	sm_del_session(ss);*/
 
 	if (rt == SERROR_SYSAPI_ERR)
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
@@ -1327,7 +1313,7 @@ void sm_set_run(session_manager_t* sm, uint8_t run) {
 }
 
 
-sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
 	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	sock_session_t* ss = 0;
@@ -1362,7 +1348,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	if (ss == 0)
 		goto add_listen_failed;
 
-	rt = sf_construct_session(sm, ss, fd, enable_et, "0.0.0.0", port, max_send_len, sf_accpet_cb/*accpet_function*/, behavior, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb/*accpet_function*/, behavior, udata, udata_len);
 	if (rt != SERROR_OK) 
 		goto add_listen_failed;
 
@@ -1415,9 +1401,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 #endif//ENABLE_SSL	
 
 	//add epoll status
-	ev = (enable_et ? EV_ET : 0) | EV_RECV;
-
-	rt = sf_add_event(sm, ss, ev);
+	rt = sf_add_event(sm, ss, EV_ET | EV_RECV);
 	if (rt)
 		goto add_listen_failed;
 
@@ -1433,7 +1417,7 @@ add_listen_failed:
 	return 0;
 }
 
-sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
 	uint8_t enable_tls, void* server_ctx, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	if (!sm || fd < 0)
@@ -1444,7 +1428,7 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 	if (!ss)
 		return 0;
 
-	rt = sf_construct_session(sm, ss, fd, enable_et, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, behavior, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, behavior, udata, udata_len);
 	if (rt != SERROR_OK)
 		goto add_client_failed;
 
@@ -1461,9 +1445,8 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 		if (err == 0 && (rt = SSL_set_fd(ssl, fd)) != 1)
 			err = 3;
 
-		if (enable_et)
+		if(err == 0 && ssl)
 			SSL_set_accept_state(ssl);
-		
 
 		/*
 		*	此处设计为非阻塞的SSL_accept
@@ -1479,10 +1462,11 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 				ss->flag.tls_handshake = ~0;	//设置为已完成握手, 但是一般不在这里完成
 		}
 
-		if (err)
+		if (err) {
+			printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], tls_err: [%d], ssl_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, ERR_get_error(), "Active shutdown");
+			ERR_clear_error();
 			goto add_client_failed;
-		
-		
+		}
 		SSL_set_options(ssl, SSL_OP_NO_SSLv2);
 		SSL_set_options(ssl, SSL_OP_NO_SSLv3);
 		SSL_set_options(ssl, SSL_OP_NO_TLSv1_1);
@@ -1495,8 +1479,7 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 #endif//ENABLE_SSL
 
 	//add epoll status
-	int ev = (enable_et ? EV_ET : 0) | EV_RECV;
-	rt = sf_add_event(sm, ss, ev);
+	rt = sf_add_event(sm, ss, EV_ET | EV_RECV);
 	if (rt) 
 		goto add_client_failed;
 
@@ -1522,7 +1505,7 @@ add_client_failed:
 	return 0;
 }
 
-sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint8_t enable_et, uint32_t max_send_len,
+sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
 	session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	if (!sm)
@@ -1546,7 +1529,7 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 		if (!ss) 
 			break;
 
-		rt = sf_construct_session(sm, ss, fd, enable_et, ip, port, max_send_len, sf_recv_cb, behavior, udata, udata_len);
+		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, behavior, udata, udata_len);
 		if (rt != SERROR_OK)
 			break;
 
@@ -1563,14 +1546,13 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 		}
 		else {
 			//add epoll status
-			ev = (enable_et ? EV_ET : 0) | EV_RECV;
-			rt = sf_add_event(sm, ss, ev);
+			rt = sf_add_event(sm, ss, EV_ET | EV_RECV);
 			if (rt != SERROR_OK)
 				break;
 		}
 
 		//If it is in ET mode and the connection fails, waiting reconnect
-		if (enable_et == 0 && rt == -1)
+		if (rt == -1)
 			break;
 
 		cds_list_add_tail(&ss->elem_servers, &sm->list_servers);
