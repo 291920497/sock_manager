@@ -13,6 +13,8 @@
 
 #define ENABLE_SSL 1
 
+#define ENABLE_URCU 0
+
 #if (ENABLE_SSL)
 #define SSL_SESSION_ID "sock_manager"
 #endif//ENABLE_SSL
@@ -57,7 +59,7 @@ extern "C" {
 //函数声明
 
 //创建一个session管理器
-session_manager_t* sm_init_manager(uint32_t cache_size);
+session_manager_t* sm_init_manager(uint32_t session_cache_size/*, uint32_t buf_cache_size, uint32_t buf_len*/);
 
 //销毁session管理器
 void sm_exit_manager(session_manager_t* sm);
