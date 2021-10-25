@@ -109,6 +109,20 @@ void cds_list_replace(struct cds_list_head *old, struct cds_list_head *_new)
 	_new->next->prev = _new;
 }
 
+static inline void __list_splice(const struct cds_list_head* list,
+	struct cds_list_head* prev,
+	struct cds_list_head* next)
+{
+	struct cds_list_head* first = list->next;
+	struct cds_list_head* last = list->prev;
+
+	first->prev = prev;
+	prev->next = first;
+
+	last->next = next;
+	next->prev = last;
+}
+
 /* Join two lists. */
 static inline
 void cds_list_splice(struct cds_list_head *add, struct cds_list_head *head)
@@ -121,6 +135,13 @@ void cds_list_splice(struct cds_list_head *add, struct cds_list_head *head)
 		head->next = add->next;
 	}
 }
+
+static inline
+void cds_list_splice_tail(struct cds_list_head* add, struct cds_list_head* head) {
+	if (add != add->next)
+		__list_splice(add, head->prev, head);
+}
+
 
 /* Get typed element from list at a given position. */
 #define cds_list_entry(ptr, type, member) 	caa_container_of(ptr, type, member)

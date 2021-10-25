@@ -22,43 +22,7 @@
 #include "tools/common/nofile_ctl.h"
 #include "tools/rwbuf/rwbuf.h"
 
-//urcu
-#if (ENABLE_URCU)
-#include <urcu.h>
-#include <urcu/rculist.h>
-typedef struct cds_list_head _sm_list_head;
-#define _SM_LIST_INIT_HEAD CDS_INIT_LIST_HEAD
-#define _SM_LIST_ADD_TAIL cds_list_add_tail
-#define _SM_LIST_DEL cds_list_del
-#define _SM_LIST_DEL_INIT cds_list_del_init
-#define _SM_LIST_EMPTY cds_list_empty
-#define _SM_LIST_ENTRY cds_list_entry
-#define _SM_LIST_FOR_EACH_ENTRY cds_list_for_each_entry
-#define _SM_LIST_FOR_EACH_ENTRY_SAFE cds_list_for_each_entry_safe
-#else
-//原本是打算用urcu的list_rcu, 后来发现结合原来的设计会让情况变得复杂
-//但是从linux内核抠出来的list要加-std=gnu99挺麻烦的, 就拷贝了urcu的list.h
-#include "tools/stl/list.h"
-//typedef struct list_head _sm_list_head;
-//#define _SM_LIST_INIT_HEAD INIT_LIST_HEAD
-//#define _SM_LIST_ADD_TAIL list_add_tail
-//#define _SM_LIST_DEL list_del
-//#define _SM_LIST_DEL_INIT list_del_init
-//#define _SM_LIST_EMPTY list_empty
-//#define _SM_LIST_ENTRY list_entry
-//#define _SM_LIST_FOR_EACH_ENTRY list_for_each_entry
-//#define _SM_LIST_FOR_EACH_ENTRY_SAFE list_for_each_entry_safe
-
-typedef struct cds_list_head _sm_list_head;
-#define _SM_LIST_INIT_HEAD CDS_INIT_LIST_HEAD
-#define _SM_LIST_ADD_TAIL cds_list_add_tail
-#define _SM_LIST_DEL cds_list_del
-#define _SM_LIST_DEL_INIT cds_list_del_init
-#define _SM_LIST_EMPTY cds_list_empty
-#define _SM_LIST_ENTRY cds_list_entry
-#define _SM_LIST_FOR_EACH_ENTRY cds_list_for_each_entry
-#define _SM_LIST_FOR_EACH_ENTRY_SAFE cds_list_for_each_entry_safe
-#endif//ENABLE_URCU
+#include "smlist.h"
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -75,6 +39,7 @@ typedef struct cds_list_head _sm_list_head;
 typedef struct session_flag {
 	int32_t		closed : 1;
 //	int32_t		etmod : 1;
+	int32_t		comming : 1;				//是否有数据到来
 	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
 	int32_t		tls_handshake : 1;			//是否是ws websocket
 	int32_t		tls : 1;					//是否是wss websocket
@@ -93,6 +58,7 @@ typedef enum {
 	EV_WRITE = EPOLLOUT
 }sm_event_t;
 
+typedef void (*session_rw)(sock_session_t*);
 
 //sock_session的数据结构
 typedef struct sock_session {
@@ -117,7 +83,9 @@ typedef struct sock_session {
 
 	void*		tls_ctx;		//wss使用到的上下文
 
-	session_event_cb		recv_cb;		//可读事件回调
+	rcv_decode_mod_t		decode_mod;		//解包模块
+	session_rw				recv_cb;		//可读事件回调
+	session_rw				send_cb;		//可写事件回调
 	session_behavior_t		uevent;			//用户行为
 
 	struct session_manager* sm;
@@ -145,8 +113,10 @@ typedef struct session_manager {
 	_sm_list_head list_pending_send;
 	_sm_list_head list_session_cache;
 
-	uint8_t		udatalen;		//用户数据长度
-	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
+//	_sm_list_head list_msg_cache;	//用于单次调用缓存的所有消息
+
+//	uint8_t		udatalen;		//用户数据长度
+//	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
 }session_manager_t;
 
 /*
@@ -300,7 +270,7 @@ static uint32_t sf_uuidhash() {
 
 
 //构建sock_session_t
-static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
+static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_event_cb send_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
 	int rt;
 
 	if (!ss || !sm || udata_len > MAX_USERDATA_LEN)
@@ -312,12 +282,15 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->sm = sm;
 	ss->port = port;
 	ss->recv_cb = recv_cb;
+	ss->send_cb = send_cb;
 	ss->last_active = time(0);
 	ss->uuid_hash = sf_uuidhash();
+	memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
 	memcpy(&ss->uevent, &uevent, sizeof(uevent));
 	strcpy(ss->ip, ip);
 	
 	ss->flag.closed = 0;
+	ss->flag.comming = 0;
 	ss->flag.ready = 0;
 	ss->flag.tls_handshake = 0;
 	ss->flag.tls = 0;
@@ -376,12 +349,15 @@ static void sf_destruct_session(sock_session_t* ss) {
 
 	ss->flag.closed = ~0;
 //	ss->flag.etmod = 0;
+	ss->flag.comming = 0;
 	ss->flag.ready = 0;
 	ss->flag.tls_handshake = 0;
 	ss->flag.tls = 0;
 	ss->flag.tls_rwantw = 0;
 	ss->flag.tls_wwantr = 0;
 	ss->tls_ctx = 0;
+
+	memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
 	memset(&ss->uevent, 0, sizeof(session_behavior_t));
 	rwbuf_clear(&ss->wbuf);
 	rwbuf_clear(&ss->rbuf);
@@ -564,7 +540,7 @@ static int sf_try_accept(int __fd, __SOCKADDR_ARG __addr, socklen_t* __restrict 
 	return fd;
 }
 
-static void sf_del_session(sock_session_t* ss) {
+static void sf_del_session(sock_session_t* ss, uint8_t remove_online) {
 	if (ss) {
 		sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
 
@@ -593,8 +569,11 @@ static void sf_del_session(sock_session_t* ss) {
 		if (_SM_LIST_EMPTY(&ss->elem_pending_send) == 0)
 			_SM_LIST_DEL_INIT(&ss->elem_pending_send);
 
-		if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
-			_SM_LIST_DEL_INIT(&ss->elem_online);
+		//这里是为了迁就带有数据的FIN报文, 让session延迟回收
+		if (remove_online) {
+			if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
+				_SM_LIST_DEL_INIT(&ss->elem_online);
+		}
 
 		if (_SM_LIST_EMPTY(&ss->elem_listens) == 0)
 			_SM_LIST_DEL_INIT(&ss->elem_listens);
@@ -651,9 +630,9 @@ static void sf_recv_cb(sock_session_t* ss) {
 	if (ss->flag.closed)
 		return;
 
-	int rt, eno;
+	int32_t rt, eno;
 	do {
-		int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
+		int32_t buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
 
 #if TEST_CODE
 		//如果已经没有额外可用的buffer
@@ -667,7 +646,7 @@ static void sf_recv_cb(sock_session_t* ss) {
 		}
 #endif
 
-		int rd = recv(ss->fd, RWBUF_START_PTR(&(ss->rbuf)), buflen, 0);
+		int rd = recv(ss->fd, RWBUF_START_PTR(&(ss->rbuf)) + RWBUF_GET_LEN(&(ss->rbuf)), buflen, 0);
 		if (rd == -1) {
 			eno = errno;
 			//If there is no data readability
@@ -718,6 +697,8 @@ static void sf_recv_cb(sock_session_t* ss) {
 		ss->rbuf.len += rd;
 		//重置读尝试的次数
 		ss->rtry_number = 0;
+		//设置为有数据到来
+		ss->flag.comming = ~0;
 		return;
 	} while (0);
 	
@@ -732,8 +713,12 @@ static void sf_recv_cb(sock_session_t* ss) {
 	//如果是服务器则暂不回收, 等待重连
 	if (_SM_LIST_EMPTY(&ss->elem_servers))
 		sm_del_session(ss);
-	else
-		sf_del_session(ss);
+	else {
+		if (ss->flag.comming)
+			sf_del_session(ss, 0);
+		else
+			sf_del_session(ss, 1);
+	}
 }
 
 /*
@@ -915,7 +900,7 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 	do {
 		if (ss->flag.tls_handshake) {
 			int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
-			rd = SSL_read(ssl, RWBUF_START_PTR(&(ss->rbuf)), buflen);
+			rd = SSL_read(ssl, RWBUF_START_PTR(&(ss->rbuf)) + RWBUF_GET_LEN(&(ss->rbuf)), buflen);
 			if (rd <= 0) {
 				serr = sf_tls_read_err(ss, rd, &rt);
 				//预期内的错误
@@ -937,6 +922,8 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 			ss->rbuf.len += rd;
 			//重置读尝试的次数
 			ss->rtry_number = 0;
+			//设置为有数据到来
+			ss->flag.comming = ~0;
 			return;
 		}
 		else {
@@ -973,8 +960,12 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 
 	if (_SM_LIST_EMPTY(&ss->elem_servers))
 		sm_del_session(ss);
-	else
-		sf_del_session(ss);
+	else {
+		if (ss->flag.comming)
+			sf_del_session(ss, 0);
+		else
+			sf_del_session(ss, 1);
+	}
 
 #endif//ENABLE_SSL
 }
@@ -1055,7 +1046,7 @@ static void sf_send_cb(sock_session_t* ss) {
 	if (_SM_LIST_EMPTY(&ss->elem_servers))
 		sm_del_session(ss);
 	else
-		sf_del_session(ss);
+		sf_del_session(ss, 1);
 }
 
 static void sf_tls_send_cb(sock_session_t* ss) {
@@ -1132,7 +1123,7 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 	if (_SM_LIST_EMPTY(&ss->elem_servers))
 		sm_del_session(ss);
 	else
-		sf_del_session(ss);
+		sf_del_session(ss, 1);
 
 #endif//ENABLE_SSL
 }
@@ -1150,10 +1141,12 @@ static void sf_pending_send(session_manager_t* sm) {
 				
 				//迎合tls, 不对写入长度做判断, 应该真正写入的数据可能在Bio中
 				if (ss->flag.closed == 0) {
-					if (ss->flag.tls)
+					/*if (ss->flag.tls)
 						sf_tls_send_cb(ss);
 					else
-						sf_send_cb(ss);
+						sf_send_cb(ss);*/
+					if (ss->send_cb)
+						ss->send_cb(ss);
 				}			
 			}
 		}
@@ -1178,7 +1171,7 @@ static void sf_pending_recv(session_manager_t* sm) {
 							if (_SM_LIST_EMPTY(&ss->elem_servers))
 								sm_del_session(ss);
 							else
-								sf_del_session(ss);
+								sf_del_session(ss, 1);
 							printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "Receive buffer full");
 						}
 					}
@@ -1193,17 +1186,84 @@ static void sf_pending_recv(session_manager_t* sm) {
 //清理所有断开连接的session
 static void sf_clean_offline(session_manager_t* sm) {
 	int rt;
-	sock_session_t* pos, *n;
-	_SM_LIST_FOR_EACH_ENTRY_SAFE(pos, n, &sm->list_offline, elem_offline) {
-		_SM_LIST_DEL_INIT(&pos->elem_offline);
+	sock_session_t* ss, *n;
+
+	//这一步原本是在sf_del_sesion内的操作, 但是为了迎合带数据的FIN报文, 所以在这里新增了这一块代码
+	_SM_LIST_FOR_EACH_ENTRY_SAFE(ss, n, &sm->list_online, elem_online) {		
+		if (ss->flag.closed) {
+			//if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
+			_SM_LIST_DEL_INIT(&ss->elem_online);
+
+			//加入到离线队列
+			if (_SM_LIST_EMPTY(&ss->elem_offline) == 0)
+				_SM_LIST_ADD_TAIL(&ss->elem_offline, &ss->sm->list_offline);
+		}
+	}
+
+	_SM_LIST_FOR_EACH_ENTRY_SAFE(ss, n, &sm->list_offline, elem_offline) {
+		_SM_LIST_DEL_INIT(&ss->elem_offline);
 
 		//rt = shutdown(pos->fd, SHUT_RDWR);
-		rt = close(pos->fd);
+		rt = close(ss->fd);
 		if (rt == -1)
 			printf("close: %s\n", strerror(errno));
 
-		sf_destruct_session(pos);
-		_SM_LIST_ADD_TAIL(&pos->elem_cache, &sm->list_session_cache);
+		sf_destruct_session(ss);
+		_SM_LIST_ADD_TAIL(&ss->elem_cache, &sm->list_session_cache);
+	}
+}
+
+//回调解包函数
+static void sf_call_decode_fn(session_manager_t* sm) {
+	int32_t rt, len;
+	uint32_t offset;
+	int8_t* data;
+	sock_session_t* ss, * n;
+	rwbuf_t* rbuf;
+	_SM_LIST_FOR_EACH_ENTRY_SAFE(ss, n, &sm->list_online, elem_online) {
+		if (ss->flag.comming == 0)
+			continue;
+
+		rbuf = &ss->rbuf;
+
+		do {
+			offset = 0;
+			len = RWBUF_GET_LEN(rbuf);
+			data = RWBUF_START_PTR(rbuf);
+
+			if (len && len >= ss->decode_mod.lenght_tirgger) {
+				if (ss->uevent.decode_cb) {
+					rt = ss->uevent.decode_cb(ss, data, len, &ss->decode_mod, &offset);
+
+					if (rt == 0)
+						break;
+					else if (rt < 0) {
+						if (_SM_LIST_EMPTY(&ss->elem_servers))
+							sm_del_session(ss);
+						else
+							sf_del_session(ss, 1);
+						break;
+					}
+
+					if (rwbuf_aband_front(rbuf, rt) != SERROR_OK) {
+						if (_SM_LIST_EMPTY(&ss->elem_servers))
+							sm_del_session(ss);
+						else
+							sf_del_session(ss, 1);
+						break;
+					}
+
+					//发布一个接收消息
+					if (ss->flag.closed) {
+						data + offset;
+						rt - offset;
+					}
+				}
+			}
+		} while ((len - rt) >= ss->decode_mod.lenght_tirgger && ss->decode_mod.lenght_tirgger != 0/*这是怕解包函数啥也不做导致死循环*/);
+
+		ss->flag.comming = 0;
+		rwbuf_replan(rbuf);
 	}
 }
 
@@ -1384,7 +1444,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	if (ss == 0)
 		goto add_listen_failed;
 
-	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb/*accpet_function*/, behavior, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb, NULL/*accpet_function*/, behavior, udata, udata_len);
 	if (rt != SERROR_OK) 
 		goto add_listen_failed;
 
@@ -1464,7 +1524,7 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 	if (!ss)
 		return 0;
 
-	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, behavior, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*recv_cb*/, sf_send_cb, behavior, udata, udata_len);
 	if (rt != SERROR_OK)
 		goto add_client_failed;
 
@@ -1511,6 +1571,7 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 
 		//回调函数改为tls
 		ss->recv_cb = sf_tls_recv_cb;
+		ss->send_cb = sf_tls_send_cb;
 	}
 #endif//ENABLE_SSL
 
@@ -1565,7 +1626,7 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 		if (!ss) 
 			break;
 
-		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, behavior, udata, udata_len);
+		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, sf_send_cb, behavior, udata, udata_len);
 		if (rt != SERROR_OK)
 			break;
 
@@ -1626,7 +1687,7 @@ void sm_del_timer(session_manager_t* sm, uint32_t timer_id, uint32_t is_incallba
 void sm_del_session(sock_session_t* ss) {
 
 	//统一操作, 但不包括服务器列表
-	sf_del_session(ss);
+	sf_del_session(ss, 1);
 
 	if (_SM_LIST_EMPTY(&ss->elem_servers) == 0)
 		_SM_LIST_DEL_INIT(&ss->elem_servers);
@@ -1663,15 +1724,17 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 			ss->recv_cb(ss);
 		}
 		if (events[i].events & EPOLLOUT) {
-			if (ss->flag.tls)
+			/*if (ss->flag.tls)
 				sf_tls_send_cb(ss);
 			else
-				sf_send_cb(ss);
+				sf_send_cb(ss);*/
+			ss->send_cb(ss);
 		}
 	}
 
 	sf_pending_send(sm);
 	sf_pending_recv(sm);
+	sf_call_decode_fn(sm);
 	sf_clean_offline(sm);
 
 	return ~0;

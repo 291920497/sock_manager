@@ -15,6 +15,7 @@ extern "C" {
 #define RWBUF_START_PTR(ptr) ((ptr)->buf + (ptr)->offset)
 #define RWBUF_UNUSE_LEN(ptr) ((ptr)->size - (ptr)->offset - (ptr)->len)
 #define RWBUF_GET_LEN(ptr) ((ptr)->len)
+#define RWBUF_GET_SIZE(ptr) ((ptr)->size)
 //#define RWBUF_ADD_LEN
 
 typedef struct rwbuf {
@@ -39,6 +40,12 @@ int32_t rwbuf_replan(rwbuf_t* rwb);
 void rwbuf_swap(rwbuf_t* l, rwbuf_t* r);
 
 void rwbuf_clear(rwbuf_t* rwb);
+
+//int8_t* rwbuf_initial_address(rwbuf_t* rwb);
+
+//uint32_t rwbuf_unused_length(rwbuf_t* rwb);
+
+//uint32_t rwbuf_get_len(rwbuf_t* rwb);
 
 #ifdef __cplusplus
 }

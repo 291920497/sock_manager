@@ -34,16 +34,40 @@
 typedef struct sock_session sock_session_t;
 typedef struct session_manager session_manager_t;
 
-typedef void (*session_event_cb)(sock_session_t*);
+//typedef void(*)
+typedef void (*session_event_cb)(uint32_t hash, uint32_t ev, int8_t* data, uint32_t len, void* udata, uint8_t udata_len);
 typedef void (*session_complate_pkg_cb)(sock_session_t*, char*, uint32_t, void*, uint8_t);
+
+
+
+//这作为解包回调的输入输出参数
+typedef struct rcv_decode_mod {
+	uint32_t lenght_tirgger;				//输入: 当前回调的数据长度>=当前设定值 输出: 下次回调的时机>=设置的数据长度
+	uint32_t processed;						//输入: 上次回调已处理的数据索引 输出: 本次处理+上次处理的字节数 
+}rcv_decode_mod_t;
+
+/*
+*	session_decode_pkg_cb 说明
+*	ss, sock session上下文
+*	data, 接收到的数据起始地址
+*	len, data的长度
+*	mod, 解包模块, 说明参照rcv_decode_mod_t
+*	return value
+*		val < 0: 指示任意错误, 将由内部移除当前session
+*		val = 0: 内部将什么也不做, 但是依然可以通过输出mod内的参数修改解包回调的行为
+*		val > 0: 表示解包函数得到一个完整的数据包, 数据包的长度即为返回值 (这里需要注意的是, 这个返回值是包括包头的(因为大多数情况都有包头))
+*	offset, 最后说明这个输出参数, 当返回值 > 0的时候使用, 用于除去包头的长度, 表示真正的数据起始位置需要函数返回值偏移offset
+*/
+typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* offset);
 
 typedef struct session_behavior {
 	session_event_cb		conn_cb;		//创建连接回调
 	session_event_cb		disconn_cb;		//断开连接回调
-											//用户自定义解包协议
+	session_decode_pkg_cb	decode_cb;		//用户自定义解包协议
 											//用户自定义封包协议
-	session_complate_pkg_cb	complate_cb;	//解包成功回调
+	session_event_cb	complate_cb;		//解包成功回调
 }session_behavior_t;
+
 
 typedef struct session_tls {
 	const char* ca;							//ca证书路径
@@ -86,6 +110,7 @@ int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int));
 int32_t sm_run2(session_manager_t* sm, uint64_t us);
 
 void sm_run(session_manager_t* sm);
+
 
 #ifdef __cplusplus
 }
