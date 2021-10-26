@@ -1,9 +1,10 @@
 #include "tirgger.h"
 //#include "../tools/stl/list.h"
 
-#include "../sock_manager.h"
+
 #include "../tools/stl/rbtree.h"
-#include "../tools/rwbuf/rwbuf.h"
+
+#include "../serror.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,36 +14,12 @@
 #include <pthread.h>
 
 
-enum {
-	//连接被创建, 逻辑线程处理
-	TEV_CREATE,
-	//有可读数据, 逻辑线程处理
-	TEV_READ,
-	//有可写数据, 读写线程处理
-	TEV_WRITE,
-	//连接断开, 可与读写结合
-	TEV_DESTROY,
-	//发送数据失败提示, 逻辑线程处理
-	TEV_WRITE_FAILURE,
-	//设置为准备就绪, 只有设置了该标识才能广播数据
-	TEV_SET_READY,
-	//主动断开一个session, 逻辑线程向管理线程发起
-	TEV_DEL_SESSION,
-};
+
 
 typedef struct rb_root rb_root_t;
 typedef struct rb_node rb_node_t;
 
-typedef struct tirgger {
 
-	_sm_list_head list_recv_msg;	//接收缓冲区的列表
-	pthread_spinlock_t lock_recv_msg;
-
-	_sm_list_head list_send_msg;	//发送缓冲区列表
-	pthread_spinlock_t lock_send_msg;
-
-	rb_root_t rbroot_session;		//key - session hash, value - tirgger_session_ctx_t
-}tirgger_t;
 
 typedef struct tev_flag {
 	int32_t closed : 1;				//是否已经关闭
@@ -81,6 +58,8 @@ typedef struct tirgger_session_ctx {
 
 
 
+
+
 void tg_add_rcvmsg_tail(tirgger_t* tg, _sm_list_head* newp) {
 	pthread_spin_lock(&tg->lock_recv_msg);
 	_SM_LIST_SPLICE_TAIL(newp, &tg->list_recv_msg);
@@ -104,4 +83,57 @@ void tg_sndmsg_add_tail(tirgger_t* tg, _sm_list_head* newp) {
 	pthread_spin_lock(&tg->lock_send_msg);
 	_SM_LIST_SPLICE_TAIL(&tg->list_send_msg, newp);
 	pthread_spin_unlock(&tg->lock_send_msg);
+}
+
+behav_tirgger_t* tg_construct_behav_tirgger(uint8_t ev, uint32_t hash, void* session_addr, const char* data, uint32_t data_len, session_event_cb ev_cb, void* udata, uint8_t udata_len, int32_t* out_err) {
+	int32_t rt;
+	behav_tirgger_t* bt;
+
+	if (udata_len > MAX_USERDATA_LEN) {
+		if(out_err)
+			*out_err = SERROR_INPARAM_ERR;
+		return 0;
+	}
+	
+
+	bt = (behav_tirgger_t*)malloc(sizeof(behav_tirgger_t));
+	if (!bt) {
+		if (out_err)
+			*out_err = SERROR_SYSAPI_ERR;
+		return 0;
+	}
+
+	memset(bt, 0, sizeof(behav_tirgger_t));
+	
+	//准备数据
+	if (data_len) {
+		rt = rwbuf_relc(&bt->buf, data_len);
+		if (rt != SERROR_OK) {
+			if (out_err)
+				*out_err = rt;
+			return 0;
+		}
+
+		rwbuf_append(&bt->buf, data, data_len);
+	}
+
+	bt->ev = ev;
+	bt->hash = hash;
+	bt->session_addr = session_addr;
+	bt->event_cb = ev_cb;
+	_SM_LIST_INIT_HEAD(&bt->elem_variable);
+
+	if (udata && udata_len)
+		memcpy(bt->udata, udata, udata_len);
+
+	if (out_err)
+		*out_err = SERROR_OK;
+	return bt;
+}
+
+void tg_destruct_behav_tirgger(behav_tirgger_t* bt) {
+	if (bt) {
+		rwbuf_free(&bt->buf);
+		free(bt);
+	}
 }

@@ -15,14 +15,15 @@
 //uuid
 #include <uuid/uuid.h>
 
-
-
 //heap_timer
 #include "tools/heap_timer/heap_timer.h"
 #include "tools/common/nofile_ctl.h"
 #include "tools/rwbuf/rwbuf.h"
 
 #include "smlist.h"
+
+//behav
+#include "tirgger/tirgger.h"
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -113,7 +114,7 @@ typedef struct session_manager {
 	_sm_list_head list_pending_send;
 	_sm_list_head list_session_cache;
 
-//	_sm_list_head list_msg_cache;	//用于单次调用缓存的所有消息
+	_sm_list_head list_birgger_msg;	//用于单次消息循环内的所有触发器消息
 
 //	uint8_t		udatalen;		//用户数据长度
 //	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
@@ -556,7 +557,7 @@ static void sf_del_session(sock_session_t* ss, uint8_t remove_online) {
 
 		//发送一个事件给消费线程, 通知断开事件以及尚未发送的数据
 		//...
-
+		
 
 		//sf_destruct_session(ss);
 
@@ -573,6 +574,14 @@ static void sf_del_session(sock_session_t* ss, uint8_t remove_online) {
 		if (remove_online) {
 			if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
 				_SM_LIST_DEL_INIT(&ss->elem_online);
+
+			//发送结束消息
+			if (ss->uevent.disconn_cb) {
+				behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
+				if (bt) {
+					_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+				}
+			}
 		}
 
 		if (_SM_LIST_EMPTY(&ss->elem_listens) == 0)
@@ -1215,7 +1224,7 @@ static void sf_clean_offline(session_manager_t* sm) {
 
 //回调解包函数
 static void sf_call_decode_fn(session_manager_t* sm) {
-	int32_t rt, len;
+	int32_t rt, len, ev;
 	uint32_t offset;
 	int8_t* data;
 	sock_session_t* ss, * n;
@@ -1254,10 +1263,26 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					}
 
 					//发布一个接收消息
-					if (ss->flag.closed) {
+					/*if (ss->flag.closed) {
 						data + offset;
 						rt - offset;
+					}*/
+
+					//收到一个完整的数据包
+					behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_READ, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen, 0);
+					if (bt) {
+						_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
 					}
+
+					//发送断开事件
+					if (ss->flag.closed && ss->uevent.disconn_cb) {
+						behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
+						if (bt) {
+							_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+						}
+					}
+
+					//bt = tg_construct_behav_tirgger(TEV_DESTROY,ss->uuid_hash,ss,0,0,)
 				}
 			}
 		} while ((len - rt) >= ss->decode_mod.lenght_tirgger && ss->decode_mod.lenght_tirgger != 0/*这是怕解包函数啥也不做导致死循环*/);
@@ -1286,6 +1311,8 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	_SM_LIST_INIT_HEAD(&(sm->list_pending_recv));
 	_SM_LIST_INIT_HEAD(&(sm->list_pending_send));
 	_SM_LIST_INIT_HEAD(&(sm->list_session_cache));
+	_SM_LIST_INIT_HEAD(&(sm->list_birgger_msg));
+	
 
 	//create cache_session
 	for (int i = 0; i < session_cache_size; ++i) {
@@ -1363,6 +1390,12 @@ void sm_exit_manager(session_manager_t* sm){
 	_SM_LIST_FOR_EACH_ENTRY_SAFE(pos, n, &sm->list_listens, elem_listens) {
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
+	}
+
+	behav_tirgger_t* bt, * tmp;
+	_SM_LIST_FOR_EACH_ENTRY_SAFE(bt, tmp, &sm->list_birgger_msg, elem_variable) {
+		_SM_LIST_DEL_INIT(&bt->elem_variable);
+		tg_destruct_behav_tirgger(bt);
 	}
 
 	//sm_clear_offline(sm);
@@ -1588,6 +1621,14 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 	//add to online list
 	if (add_online)
 		_SM_LIST_ADD_TAIL(&(ss->elem_online), &(sm->list_online));
+
+	if (behavior.conn_cb) {
+		behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len, 0);
+		if(!bt)
+			goto add_client_failed;
+		_SM_LIST_ADD_TAIL(&bt->elem_variable, &sm->list_birgger_msg);
+	}
+
 	return ss;
 
 add_client_failed:
@@ -1736,6 +1777,16 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	sf_pending_recv(sm);
 	sf_call_decode_fn(sm);
 	sf_clean_offline(sm);
+
+#if 1
+	behav_tirgger_t* pos, * n;
+	_SM_LIST_FOR_EACH_ENTRY_SAFE(pos, n, &sm->list_birgger_msg, elem_variable) {
+		pos->event_cb(pos->hash, pos->ev, RWBUF_START_PTR(&pos->buf), RWBUF_GET_LEN(&pos->buf), pos->udata, pos->udatalen);
+		_SM_LIST_DEL_INIT(&pos->elem_variable);
+		tg_destruct_behav_tirgger(pos);
+	}
+
+#endif
 
 	return ~0;
 }

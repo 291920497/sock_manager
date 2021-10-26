@@ -24,7 +24,7 @@
 #endif//MAX_EPOLL_SIZE
 
 #ifndef MAX_USERDATA_LEN
-#define MAX_USERDATA_LEN 64
+#define MAX_USERDATA_LEN 16
 #endif//MAX_USERDATA_LEN
 
 
