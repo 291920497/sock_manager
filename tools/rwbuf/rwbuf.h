@@ -13,7 +13,7 @@ extern "C" {
 ;
 
 #define RWBUF_START_PTR(ptr) ((ptr)->buf + (ptr)->offset)
-#define RWBUF_UNUSE_LEN(ptr) ((ptr)->size - (ptr)->offset - (ptr)->len)
+#define RWBUF_GET_UNUSELEN(ptr) ((ptr)->size - (ptr)->offset - (ptr)->len)
 #define RWBUF_GET_LEN(ptr) ((ptr)->len)
 #define RWBUF_GET_SIZE(ptr) ((ptr)->size)
 //#define RWBUF_ADD_LEN

@@ -31,10 +31,11 @@ extern "C"
 
 
 
-//如果有需求可以修改这个长度, 暂固定64
-#define HT_USERDATA_LEN 64
+//如果有需求可以修改这个长度, 暂固定32
+#define HT_USERDATA_LEN 32
 
 typedef struct heap_obj heap_obj_t;
+typedef void(*heap_timer_cb)(uint32_t, void*, uint8_t);
 
 typedef struct timer_element {
 	uint32_t timer_id;	//定时器ID
@@ -47,7 +48,8 @@ typedef struct timer_element {
 	char udata[HT_USERDATA_LEN];		
 	uint8_t udata_len;
 #endif
-	void(*on_timeout)(uint32_t, void*);
+	//void(*on_timeout)(uint32_t, void*, uint8_t);
+	heap_timer_cb on_timeout;
 }timer_element_t;
 
 typedef struct heap_timer {
@@ -77,7 +79,7 @@ void ht_destroy_heap_timer(heap_timer_t* ht);
 	-1 failed;
 	other timer_id;
 */
-uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* udata, uint8_t udata_len);
+uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, uint32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len);
 
 void ht_del_timer(heap_timer_t* ht, uint32_t timer_id);
 

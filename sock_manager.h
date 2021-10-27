@@ -38,6 +38,9 @@ typedef struct session_manager session_manager_t;
 typedef void (*session_event_cb)(uint32_t hash, uint32_t ev, int8_t* data, uint32_t len, void* udata, uint8_t udata_len);
 typedef void (*session_complate_pkg_cb)(sock_session_t*, char*, uint32_t, void*, uint8_t);
 
+//与heap_timer同步的回调函数类型, 不想引入头文件
+typedef void(*sm_heap_timer_cb)(uint32_t, void*, uint8_t);
+
 
 
 //这作为解包回调的输入输出参数
@@ -99,7 +102,7 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
 	session_behavior_t behavior, void* udata, uint8_t udata_len);
 
-uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, void(*timer_cb)(uint32_t, void*), void* udata, uint8_t udata_len);
+uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, sm_heap_timer_cb timer_cb, void* udata, uint8_t udata_len);
 
 void sm_del_timer(session_manager_t* sm, uint32_t timer_id, uint32_t is_incallback);
 

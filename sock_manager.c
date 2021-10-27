@@ -24,6 +24,7 @@
 
 //behav
 #include "tirgger/tirgger.h"
+#include "tirgger/rwtrd_call_tirgger.h"
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -115,6 +116,9 @@ typedef struct session_manager {
 	_sm_list_head list_session_cache;
 
 	_sm_list_head list_birgger_msg;	//用于单次消息循环内的所有触发器消息
+
+	sock_session_t* pipe0;
+	tirgger_t* tg;	//触发器, 他工作于另外的线程
 
 //	uint8_t		udatalen;		//用户数据长度
 //	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
@@ -304,14 +308,16 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	if (udata && udata_len)
 		memcpy(&ss->udata, &udata, udata_len);
 
-	rt = rwbuf_relc(&ss->wbuf, send_len);
-	if (rt != SERROR_OK)
-		goto session_construct_failed;
+	if (send_len) {
+		rt = rwbuf_relc(&ss->wbuf, send_len);
+		if (rt != SERROR_OK)
+			goto session_construct_failed;
 
-	rt = rwbuf_relc(&ss->rbuf, send_len * 2);
-	if (rt != SERROR_OK)
-		goto session_construct_failed;
-
+		rt = rwbuf_relc(&ss->rbuf, send_len * 2);
+		if (rt != SERROR_OK)
+			goto session_construct_failed;
+	}
+	
 	_SM_LIST_INIT_HEAD(&(ss->elem_online));
 	_SM_LIST_INIT_HEAD(&(ss->elem_offline));
 	_SM_LIST_INIT_HEAD(&(ss->elem_servers));
@@ -572,16 +578,23 @@ static void sf_del_session(sock_session_t* ss, uint8_t remove_online) {
 
 		//这里是为了迁就带有数据的FIN报文, 让session延迟回收
 		if (remove_online) {
-			if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
+			/*if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
+				_SM_LIST_DEL_INIT(&ss->elem_online);*/
+
+			if (_SM_LIST_EMPTY(&ss->elem_online) == 0) {
 				_SM_LIST_DEL_INIT(&ss->elem_online);
 
-			//发送结束消息
-			if (ss->uevent.disconn_cb) {
-				behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
-				if (bt) {
-					_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+				//发送结束消息
+				if (ss->uevent.disconn_cb) {
+					/*behav_tirgger_t* bt = tg_construct_behav(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
+					if (bt) {
+						_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+					}*/
+
+					if (tg_rwtrd_add_rcvmsg2tmp(ss->sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) != SERROR_OK);
+					//打印错误, 但不应该停止工作
 				}
-			}
+			}	
 		}
 
 		if (_SM_LIST_EMPTY(&ss->elem_listens) == 0)
@@ -641,7 +654,7 @@ static void sf_recv_cb(sock_session_t* ss) {
 
 	int32_t rt, eno;
 	do {
-		int32_t buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
+		int32_t buflen = RWBUF_GET_UNUSELEN(&(ss->rbuf));
 
 #if TEST_CODE
 		//如果已经没有额外可用的buffer
@@ -908,7 +921,7 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 
 	do {
 		if (ss->flag.tls_handshake) {
-			int buflen = RWBUF_UNUSE_LEN(&(ss->rbuf));
+			int buflen = RWBUF_GET_UNUSELEN(&(ss->rbuf));
 			rd = SSL_read(ssl, RWBUF_START_PTR(&(ss->rbuf)) + RWBUF_GET_LEN(&(ss->rbuf)), buflen);
 			if (rd <= 0) {
 				serr = sf_tls_read_err(ss, rd, &rt);
@@ -1171,7 +1184,7 @@ static void sf_pending_recv(session_manager_t* sm) {
 				//尚未关闭且有剩余缓冲区
 				if (ss->flag.closed == 0) {
 					//可能是监听套接字
-					if (RWBUF_UNUSE_LEN(&ss->rbuf))
+					if (RWBUF_GET_UNUSELEN(&ss->rbuf))
 						//sf_recv_cb(ss);
 						ss->recv_cb(ss);
 					else {
@@ -1269,18 +1282,27 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					}*/
 
 					//收到一个完整的数据包
-					behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_READ, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen, 0);
-					if (bt) {
-						_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
-					}
+					ev = TEV_READ | ss->flag.closed ? TEV_DESTROY : 0;
 
-					//发送断开事件
-					if (ss->flag.closed && ss->uevent.disconn_cb) {
-						behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
-						if (bt) {
-							_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
-						}
-					}
+					if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, ev, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen) != SERROR_OK);
+						//错误
+					if (ss->flag.closed && ss->uevent.disconn_cb)
+						if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) != SERROR_OK);
+							//错误
+
+					////这里可能发送一个带FIN报文的数据, 接收端可以处理消息,但不应该发送消息了
+					//behav_tirgger_t* bt = tg_construct_behav(ev, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen, 0);
+					//if (bt) {
+					//	_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+					//}
+
+					////发送断开事件
+					//if (ss->flag.closed && ss->uevent.disconn_cb) {
+					//	behav_tirgger_t* bt = tg_construct_behav(TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen, 0);
+					//	if (bt) {
+					//		_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
+					//	}
+					//}
 
 					//bt = tg_construct_behav_tirgger(TEV_DESTROY,ss->uuid_hash,ss,0,0,)
 				}
@@ -1292,11 +1314,24 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 	}
 }
 
-/*
-	global function
-*/
+//触发器管道
+static void sf_tirgger_pipe0_fn(session_manager_t* sm) {
+	sock_session_t* ss = sm->pipe0;
+	uint32_t len = RWBUF_GET_LEN(&ss->rbuf);
+
+	if (len) {
+		for (int i = 0; i < len; ++i) {
+			if (i == TCTL_HAVE_SNDMSG) {
+				//获取列表, 尝试写入指定是session
+			}
+		}
+
+		rwbuf_aband_front(&ss->rbuf, len);
+	}
+}
 
 session_manager_t* sm_init_manager(uint32_t session_cache_size) {
+	session_behavior_t behav = { 0,0,0,0 };
 	session_manager_t* sm = (session_manager_t*)malloc(sizeof(session_manager_t));
 	if (!sm)return 0;
 
@@ -1312,7 +1347,6 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	_SM_LIST_INIT_HEAD(&(sm->list_pending_send));
 	_SM_LIST_INIT_HEAD(&(sm->list_session_cache));
 	_SM_LIST_INIT_HEAD(&(sm->list_birgger_msg));
-	
 
 	//create cache_session
 	for (int i = 0; i < session_cache_size; ++i) {
@@ -1328,6 +1362,11 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	//inti timer manager
 	sm->ht_timer = ht_create_heap_timer();
 	if (sm->ht_timer == 0)
+		goto sm_init_manager_failed;
+
+	//init tirgger
+	sm->tg = tg_init_tirgger();
+	if (!sm->tg)
 		goto sm_init_manager_failed;
 
 	//init epoll, try twice
@@ -1349,6 +1388,10 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	//heart cb
 	//ht_add_timer(sm->ht_timer, MAX_HEART_TIMEOUT * 1000, 0, -1, cb_on_heart_timeout, sm);
 	//server reconnect cb
+
+	if ((sm->pipe0 = sm_add_client(sm, tg_rwtrd_tirgger_pipe0(sm->tg), "pipe0", 0, 8192, 0, 0, 0, behav, 0, 0)) == 0)
+		goto sm_init_manager_failed;
+
 	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, 0, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 
 	return sm;
@@ -1361,12 +1404,16 @@ sm_init_manager_failed:
 			_sm_free(pos);
 		}
 	}
-	if (sm->ht_timer) {
+
+	if (sm->tg)
+		tg_exit_tirgger(sm->tg);
+
+	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
-	}
-	if (sm) {
+
+	if (sm)
 		free(sm);
-	}
+
 	return 0;
 
 }
@@ -1374,6 +1421,8 @@ sm_init_manager_failed:
 void sm_exit_manager(session_manager_t* sm){
 	if (sm == 0)
 		return;
+
+	sm_del_session(sm->pipe0);
 
 	//clean resources and all session
 	sock_session_t* pos, * n;
@@ -1392,11 +1441,11 @@ void sm_exit_manager(session_manager_t* sm){
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
 
-	behav_tirgger_t* bt, * tmp;
+	/*behav_tirgger_t* bt, * tmp;
 	_SM_LIST_FOR_EACH_ENTRY_SAFE(bt, tmp, &sm->list_birgger_msg, elem_variable) {
 		_SM_LIST_DEL_INIT(&bt->elem_variable);
-		tg_destruct_behav_tirgger(bt);
-	}
+		tg_destruct_behav(bt);
+	}*/
 
 	//sm_clear_offline(sm);
 	sf_clean_offline(sm);
@@ -1426,6 +1475,9 @@ void sm_exit_manager(session_manager_t* sm){
 		printf("free: %p\n", pos);
 		_sm_free(pos);
 	}*/
+
+	if (sm->tg)
+		tg_exit_tirgger(sm->tg);
 
 	if (sm->ht_timer) 
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -1623,10 +1675,12 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 		_SM_LIST_ADD_TAIL(&(ss->elem_online), &(sm->list_online));
 
 	if (behavior.conn_cb) {
-		behav_tirgger_t* bt = tg_construct_behav_tirgger(TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len, 0);
+		/*behav_tirgger_t* bt = tg_construct_behav(TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len, 0);
 		if(!bt)
 			goto add_client_failed;
-		_SM_LIST_ADD_TAIL(&bt->elem_variable, &sm->list_birgger_msg);
+		_SM_LIST_ADD_TAIL(&bt->elem_variable, &sm->list_birgger_msg);*/
+		if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len) != SERROR_OK);
+			//错误
 	}
 
 	return ss;
@@ -1708,7 +1762,7 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 	return 0;
 }
 
-uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, void(*timer_cb)(uint32_t, void*), void* udata, uint8_t udata_len) {
+uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, sm_heap_timer_cb timer_cb, void* udata, uint8_t udata_len) {
 	if (sm == 0 || sm->ht_timer == 0)
 		return -1;
 
@@ -1779,12 +1833,12 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	sf_clean_offline(sm);
 
 #if 1
-	behav_tirgger_t* pos, * n;
+	/*behav_tirgger_t* pos, * n;
 	_SM_LIST_FOR_EACH_ENTRY_SAFE(pos, n, &sm->list_birgger_msg, elem_variable) {
 		pos->event_cb(pos->hash, pos->ev, RWBUF_START_PTR(&pos->buf), RWBUF_GET_LEN(&pos->buf), pos->udata, pos->udatalen);
 		_SM_LIST_DEL_INIT(&pos->elem_variable);
-		tg_destruct_behav_tirgger(pos);
-	}
+		tg_destruct_behav(pos);
+	}*/
 
 #endif
 

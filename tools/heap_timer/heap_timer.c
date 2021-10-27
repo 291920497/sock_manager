@@ -123,7 +123,7 @@ void ht_destroy_heap_timer(heap_timer_t* ht) {
 	}
 }
 
-uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval_ms,uint32_t delay_ms, int32_t repeat, void(*on_timeout)(uint32_t, void*), void* udata, uint8_t udata_len) {
+uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval_ms,uint32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len) {
 	if (udata_len > HT_USERDATA_LEN)
 		return -1;
 
@@ -199,7 +199,7 @@ uint32_t ht_update_timer(heap_timer_t* ht) {
 		if (te->ring_time <= cur_ms) {
 			ht->running_timer = te;
 			if (te->on_timeout) {
-				te->on_timeout(te->timer_id, te->udata);
+				te->on_timeout(te->timer_id, te->udata, te->udata_len);
 			}
 
 			if (te->repeat != -1 && (te->repeat -= 1) == 0) {
