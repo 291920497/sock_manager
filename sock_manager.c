@@ -23,8 +23,13 @@
 #include "smlist.h"
 
 //behav
-#include "tirgger/tirgger.h"
-#include "tirgger/rwtrd_call_tirgger.h"
+//#include "tirgger/tirgger.h"
+//#include "tirgger/rwtrd_call_tirgger.h"
+
+//massgener
+//#include "post_office/"
+#include "post_office/sorting_center.h"
+#include "post_office/messenger/messenger.h"
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -52,6 +57,8 @@ typedef struct session_flag {
 //session manager的状态机
 typedef struct manager_flag {
 	char running	: 1;
+	char merge : 1;
+	char tirgger_readable : 1;
 }manager_flag_t;
 
 typedef enum {
@@ -115,10 +122,13 @@ typedef struct session_manager {
 	_sm_list_head list_pending_send;
 	_sm_list_head list_session_cache;
 
-	_sm_list_head list_birgger_msg;	//用于单次消息循环内的所有触发器消息
+	cds_list_head_t list_fifo;		//排队的信使
+	rb_root_t rbroot_house_number;	//门牌号列表
 
 	sock_session_t* pipe0;
-	tirgger_t* tg;	//触发器, 他工作于另外的线程
+	sorting_center_t* sc;			//分拣中心
+//	tirgger_t* tg;	//触发器, 他工作于另外的线程
+//	pthread_t tid;	//触发器线程
 
 //	uint8_t		udatalen;		//用户数据长度
 //	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
@@ -273,6 +283,54 @@ static uint32_t sf_uuidhash() {
 	return hash;
 }
 
+static void sf_set_tirgger(session_manager_t* sm, uint8_t hava_rcv) {
+	if (hava_rcv) {
+		if (sm->flag.tirgger_readable == 0)
+			sm->flag.tirgger_readable = ~0;
+	}else if(sm->flag.tirgger_readable) {
+		sm->flag.tirgger_readable = 0;
+	}
+}
+
+static void sf_set_flag_need_merge(session_manager_t* sm, uint8_t merge) {
+	if (merge) {
+		if (sm->flag.merge == 0)
+			sm->flag.merge = ~0;
+	}
+	else if (sm->flag.merge)
+		sm->flag.merge = 0;
+}
+
+static int32_t sf_search_and_insert_msger_with_ram(sock_session_t*ss, const char* start, uint32_t len, uint8_t theme, session_event_cb behav, messenger_t** out_msger) {
+	messenger_t* msger = msger_search(&ss->sm->rbroot_house_number, ss->uuid_hash);
+	if (msger) {
+		if (out_msger)
+			*out_msger = msger;
+
+		return msger_add_aparagraph_with_ram(msger, start, len, theme, behav);
+	}
+
+	msger = msger_hire(sizeof(letter_information_t));
+	if (!msger)
+		return SERROR_SYSAPI_ERR;
+
+	letter_information_t* linfo = msger->information;
+	linfo->hash = ss->uuid_hash;
+	linfo->address = ss;
+	linfo->udata_len = ss->udatalen;
+	if (linfo->udata_len)
+		memcpy(linfo->udata, ss->udata, ss->udatalen);
+
+	//这一步不会错
+	msger_insert(&ss->sm->rbroot_house_number, msger);
+
+	if (out_msger)
+		*out_msger = msger;
+
+	//_SM_LIST_ADD_TAIL(&msger->elem_fifo, &ss->sm->tg->list_recv_tmp);
+	//return SERROR_OK;
+	return msger_add_aparagraph_with_ram(msger, start, len, theme, behav);
+}
 
 //构建sock_session_t
 static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port,uint32_t send_len, session_event_cb recv_cb, session_event_cb send_cb, session_behavior_t uevent, void* udata, uint16_t udata_len) {
@@ -290,7 +348,9 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->send_cb = send_cb;
 	ss->last_active = time(0);
 	ss->uuid_hash = sf_uuidhash();
-	memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
+	//memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
+	ss->decode_mod.lenght_tirgger = 1;
+	ss->decode_mod.processed = 0;
 	memcpy(&ss->uevent, &uevent, sizeof(uevent));
 	strcpy(ss->ip, ip);
 	
@@ -364,7 +424,10 @@ static void sf_destruct_session(sock_session_t* ss) {
 	ss->flag.tls_wwantr = 0;
 	ss->tls_ctx = 0;
 
-	memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
+	ss->decode_mod.lenght_tirgger = 1;
+	ss->decode_mod.processed = 0;
+
+	//memset(&ss->decode_mod, 0, sizeof(ss->decode_mod));
 	memset(&ss->uevent, 0, sizeof(session_behavior_t));
 	rwbuf_clear(&ss->wbuf);
 	rwbuf_clear(&ss->rbuf);
@@ -591,8 +654,20 @@ static void sf_del_session(sock_session_t* ss, uint8_t remove_online) {
 						_SM_LIST_ADD_TAIL(&bt->elem_variable, &ss->sm->list_birgger_msg);
 					}*/
 
-					if (tg_rwtrd_add_rcvmsg2tmp(ss->sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) != SERROR_OK);
-					//打印错误, 但不应该停止工作
+					/*if (tg_rwtrd_add_rcvmsg2tmp(ss->sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) == SERROR_OK)
+						sf_set_flag_need_merge(ss->sm, 1);*/
+
+					{
+						messenger_t* msger = 0;
+
+						if (sf_search_and_insert_msger_with_ram(ss, 0, 0, THEME_DESTORY, ss->uevent.disconn_cb, &msger) == SERROR_OK) {
+							//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+							cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+							sf_set_flag_need_merge(ss->sm, 1);
+						}
+						//打印错误
+					}
+					
 				}
 			}	
 		}
@@ -1242,11 +1317,13 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 	int8_t* data;
 	sock_session_t* ss, * n;
 	rwbuf_t* rbuf;
+	messenger_t* msger;
 	_SM_LIST_FOR_EACH_ENTRY_SAFE(ss, n, &sm->list_online, elem_online) {
 		if (ss->flag.comming == 0)
 			continue;
 
 		rbuf = &ss->rbuf;
+		msger = 0;
 
 		do {
 			offset = 0;
@@ -1282,12 +1359,40 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					}*/
 
 					//收到一个完整的数据包
-					ev = TEV_READ | ss->flag.closed ? TEV_DESTROY : 0;
+					ev = THEME_RECV | (ss->flag.closed ? THEME_DESTORY : 0);
 
-					if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, ev, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen) != SERROR_OK);
+					//若在当前回调中 第一次调用,那么找到这个信使, 后续的信件就直接递交给信使
+					if (!msger) {
+						if (sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK) {
+							//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+							cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+							sf_set_flag_need_merge(ss->sm, 1);
+						}
+							
+					}
+					else {
+						if (msger_add_aparagraph_with_ram(msger, data + offset, rt - offset, ev, ss->uevent.complate_cb) == SERROR_OK) {
+							//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+							cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+							sf_set_flag_need_merge(ss->sm, 1);
+						}
+					}
+
+					/*if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, ev, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen) == SERROR_OK)
+						sf_set_flag_need_merge(ss->sm, 1);*/
+
+					/*if(sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK)
+						sf_set_flag_need_merge(ss->sm, 1);*/
 						//错误
+
+					//此时不管怎么样都产生了一个信使
 					if (ss->flag.closed && ss->uevent.disconn_cb)
-						if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) != SERROR_OK);
+						if(msger_add_aparagraph_with_ram(msger, 0, 0, THEME_DESTORY, ss->uevent.disconn_cb) == SERROR_OK)
+							sf_set_flag_need_merge(ss->sm, 1);
+						/*if(sf_search_and_insert_msger_with_ram(ss, 0, 0, TEV_DESTROY, ss->uevent.disconn_cb) == SERROR_OK)
+							sf_set_flag_need_merge(ss->sm, 1);*/
+						/*if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) == SERROR_OK)
+							sf_set_flag_need_merge(ss->sm, 1);*/
 							//错误
 
 					////这里可能发送一个带FIN报文的数据, 接收端可以处理消息,但不应该发送消息了
@@ -1314,29 +1419,58 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 	}
 }
 
-//触发器管道
-static void sf_tirgger_pipe0_fn(session_manager_t* sm) {
+//触发器相关的是否需要做点什么
+static void sf_tigger_do_something(session_manager_t* sm) {
 	sock_session_t* ss = sm->pipe0;
-	uint32_t len = RWBUF_GET_LEN(&ss->rbuf);
 
+	int8_t* buf = RWBUF_START_PTR(&ss->rbuf);
+	uint32_t len = RWBUF_GET_LEN(&ss->rbuf);
+	//首先尝试还原状态
 	if (len) {
 		for (int i = 0; i < len; ++i) {
-			if (i == TCTL_HAVE_SNDMSG) {
-				//获取列表, 尝试写入指定是session
+			if (buf[i] == SORT_CLEN_SORTING_INBOX) {
+				//触发器线程处理完则重置可读事件
+				sm->flag.tirgger_readable = 0;
 			}
 		}
-
 		rwbuf_aband_front(&ss->rbuf, len);
 	}
+	
+
+	//是否需要由当前线程来发起合并操作
+	if (sm->flag.merge) {
+		//tg_rwtrd_merge_rcvmsg(sm->tg);
+		//sc_merge_pending2complate_inbox(sm->sc);
+		sc_merge_box2complate_inbox(sm->sc, &sm->list_fifo);
+		sm->flag.merge = 0;	//还原
+		sm->rbroot_house_number = RB_ROOT;
+
+		//合并之后向线程发起有数据到达的事件
+
+		//简陋的写
+		//如果可读事件尚未被唤醒, 或已经被重置
+		if (sm->flag.tirgger_readable == 0) {
+			char ctl = SORT_NEED_SORTING_INBOX;
+			//write(ss->fd, &ctl, sizeof(char));
+			rwbuf_append(&ss->wbuf, &ctl, 1);
+			sf_add_event(sm, ss, EV_WRITE);
+			//设置状态,等待被重置
+			sm->flag.tirgger_readable = ~0;
+		}
+	}
+
+
 }
 
 session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	session_behavior_t behav = { 0,0,0,0 };
+	pthread_t tid;
 	session_manager_t* sm = (session_manager_t*)malloc(sizeof(session_manager_t));
 	if (!sm)return 0;
 
 	memset(sm, 0, sizeof(session_manager_t));
 	sm->flag.running = 1;
+	sm->ep_fd = -1;
 
 	//Init all list
 	_SM_LIST_INIT_HEAD(&(sm->list_online));
@@ -1346,7 +1480,10 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	_SM_LIST_INIT_HEAD(&(sm->list_pending_recv));
 	_SM_LIST_INIT_HEAD(&(sm->list_pending_send));
 	_SM_LIST_INIT_HEAD(&(sm->list_session_cache));
-	_SM_LIST_INIT_HEAD(&(sm->list_birgger_msg));
+
+	//init rb root 
+	CDS_INIT_LIST_HEAD(&(sm->list_fifo));
+	sm->rbroot_house_number = RB_ROOT;
 
 	//create cache_session
 	for (int i = 0; i < session_cache_size; ++i) {
@@ -1365,9 +1502,15 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 		goto sm_init_manager_failed;
 
 	//init tirgger
-	sm->tg = tg_init_tirgger();
+	/*sm->tg = tg_init_tirgger();
 	if (!sm->tg)
+		goto sm_init_manager_failed;*/
+
+	//init sorting center
+	sm->sc = sc_start_business();
+	if(!sm->sc)
 		goto sm_init_manager_failed;
+
 
 	//init epoll, try twice
 	sm->ep_fd = epoll_create(EPOLL_CLOEXEC);
@@ -1389,8 +1532,13 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	//ht_add_timer(sm->ht_timer, MAX_HEART_TIMEOUT * 1000, 0, -1, cb_on_heart_timeout, sm);
 	//server reconnect cb
 
-	if ((sm->pipe0 = sm_add_client(sm, tg_rwtrd_tirgger_pipe0(sm->tg), "pipe0", 0, 8192, 0, 0, 0, behav, 0, 0)) == 0)
+	if ((sm->pipe0 = sm_add_client(sm, sm->sc->bells[0], "bells0", 0, 8192, 0, 0, 0, behav, 0, 0)) == 0)
 		goto sm_init_manager_failed;
+
+	//start thread
+	if (pthread_create(&tid, 0, sc_thread_assembly_line, sm->sc) != 0)
+		goto sm_init_manager_failed;
+	pthread_detach(tid);
 
 	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, 0, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 
@@ -1405,8 +1553,14 @@ sm_init_manager_failed:
 		}
 	}
 
-	if (sm->tg)
-		tg_exit_tirgger(sm->tg);
+	if (sm->ep_fd != -1) 
+		close(sm->ep_fd);
+
+	/*if (sm->tg)
+		tg_exit_tirgger(sm->tg);*/
+
+	if (sm->sc)
+		sc_outof_business(sm->sc);
 
 	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -1426,6 +1580,7 @@ void sm_exit_manager(session_manager_t* sm){
 
 	//clean resources and all session
 	sock_session_t* pos, * n;
+	messenger_t* l, * r;
 	_SM_LIST_FOR_EACH_ENTRY_SAFE(pos, n, &sm->list_online, elem_online) {
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
@@ -1459,6 +1614,11 @@ void sm_exit_manager(session_manager_t* sm){
 		}
 	}
 
+	//回收信使
+	cds_list_for_each_entry_safe(l, r, &sm->list_fifo, elem_fifo) {
+		msger_fire(l);
+	}
+
 #if (ENABLE_SSL)
 	SSL_COMP_free_compression_methods();
 	ERR_remove_state(0);
@@ -1476,8 +1636,17 @@ void sm_exit_manager(session_manager_t* sm){
 		_sm_free(pos);
 	}*/
 
-	if (sm->tg)
-		tg_exit_tirgger(sm->tg);
+	//等待线程回收结束, 
+	while (sc_is_open(sm->sc)) {
+		usleep(30);
+		printf("?\n");
+	}
+		
+
+	/*if (sm->tg)
+		tg_exit_tirgger(sm->tg);*/
+	if (sm->sc)
+		sc_outof_business(sm->sc);
 
 	if (sm->ht_timer) 
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -1679,8 +1848,19 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 		if(!bt)
 			goto add_client_failed;
 		_SM_LIST_ADD_TAIL(&bt->elem_variable, &sm->list_birgger_msg);*/
-		if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len) != SERROR_OK);
+		/*if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_CREATE, ss->uuid_hash, ss, 0, 0, behavior.conn_cb, udata, udata_len) == SERROR_OK)
+			sf_set_flag_need_merge(ss->sm, 1);*/
 			//错误
+
+		{
+			messenger_t* msger = 0;
+			if (sf_search_and_insert_msger_with_ram(ss, 0, 0, THEME_CREATE, behavior.conn_cb, &msger) == SERROR_OK) {
+				//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+				cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+				sf_set_flag_need_merge(ss->sm, 1);
+			}
+		}
+		
 	}
 
 	return ss;
@@ -1831,6 +2011,7 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	sf_pending_recv(sm);
 	sf_call_decode_fn(sm);
 	sf_clean_offline(sm);
+	sf_tigger_do_something(sm);
 
 #if 1
 	/*behav_tirgger_t* pos, * n;
@@ -1854,8 +2035,9 @@ void sm_run(session_manager_t* sm) {
 
 		//signal
 		if (sm_run2(sm, waitms) == 0) {
-			if (errno == SIGQUIT)
-				sm->flag.running = 0;
+			//signal
+			//sm->flag.running = 0;
+			//sm->flag.running = 0;
 		}
 	}
 }

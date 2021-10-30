@@ -28,14 +28,13 @@
 #endif//MAX_USERDATA_LEN
 
 
-
-
 //类型申明
 typedef struct sock_session sock_session_t;
 typedef struct session_manager session_manager_t;
+typedef struct messenger messenger_t;	//这个函数的声明在post_office/messenger/messenger.h中 在会调用加入消息,需要引入该头文件
 
 //typedef void(*)
-typedef void (*session_event_cb)(uint32_t hash, uint32_t ev, int8_t* data, uint32_t len, void* udata, uint8_t udata_len);
+typedef void (*session_event_cb)(uint32_t hash, const void* session, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, void* udata, uint8_t udata_len, messenger_t** msger_seat);
 typedef void (*session_complate_pkg_cb)(sock_session_t*, char*, uint32_t, void*, uint8_t);
 
 //与heap_timer同步的回调函数类型, 不想引入头文件
