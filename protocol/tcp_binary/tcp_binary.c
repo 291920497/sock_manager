@@ -1,9 +1,12 @@
 #include "tcp_binary.h"
 
-#define TBINARY_LENGTH_TYPE uint32_t
+#include "../../serror.h"
+
+
+#define BINARY_MAX_SEND 8192
 #define BINARY_MAX_RECV 16384
 
-int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* offset) {
+int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, TBINARY_LENGTH_TYPE len, rcv_decode_mod_t* mod, uint32_t* offset) {
 	int type_length = sizeof(TBINARY_LENGTH_TYPE);
 
 	//长度标志不完整
@@ -48,4 +51,24 @@ int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_d
 	mod->processed = 0;
 
 	return 0;
+}
+
+int32_t tcp_binary_encode_fn(const char* data, TBINARY_LENGTH_TYPE len, rwbuf_t* out_buf) {
+	if (!data || !len)
+		return SERROR_INPARAM_ERR;
+
+	int rt;
+	TBINARY_LENGTH_TYPE snd_len = len;
+	int type_length = sizeof(TBINARY_LENGTH_TYPE);
+
+	//若超出了长度, 那么失败
+	if ((type_length + len) > BINARY_MAX_SEND)
+		return SERROR_BIN_SEND_LIMIT;
+
+	if ((rt = rwbuf_mlc(out_buf, type_length + len)) != SERROR_OK)
+		return rt;
+
+	rwbuf_append(out_buf, &len, type_length);
+	rwbuf_append(out_buf, data, len);
+	return SERROR_OK;
 }

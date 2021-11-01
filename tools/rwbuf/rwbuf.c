@@ -5,6 +5,11 @@
 #define _rwbuf_realloc realloc
 #define _rwbuf_free free
 
+void rwbuf_init(rwbuf_t* rwb) {
+	if (rwb)
+		memset(rwb, 0, sizeof(rwbuf_t));
+}
+
 int32_t rwbuf_mlc(rwbuf_t* rwb, uint32_t capacity) {
 	memset(rwb, 0, sizeof(rwbuf_t));
 	return rwbuf_relc(rwb, capacity);
@@ -32,10 +37,23 @@ void rwbuf_free(rwbuf_t* rwb) {
 	}
 }
 
-int32_t rwbuf_append(rwbuf_t* rwb, void* data, uint32_t data_len) {
-	if (!rwb)
-		return SERROR_INPARAM_ERR;
+int32_t rwbuf_enough(rwbuf_t* rwb, uint32_t wlen) {
+	if (wlen > rwb->size)
+		return 0;
 
+	//如果剩余的缓冲区就足够
+	if ((rwb->size - rwb->offset - rwb->len) >= wlen)
+		return 1;
+
+	rwbuf_replan(rwb);
+
+	if ((rwb->size - rwb->offset - rwb->len) >= wlen)
+		return 1;
+	
+	return 0;
+}
+
+int32_t rwbuf_append(rwbuf_t* rwb, void* data, uint32_t data_len) {
 	//剩余的缓冲区足够
 	if ((rwb->size - rwb->offset - rwb->len) >= data_len) {
 		//将数据拷贝到 buf + 偏移位 + 数据长度

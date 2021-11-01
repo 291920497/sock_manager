@@ -17,7 +17,7 @@ sorting_center_t* sc_start_business() {
 		CDS_INIT_LIST_HEAD(&sc->list_complate_inbox);
 		CDS_INIT_LIST_HEAD(&sc->list_complate_outbox);
 
-		CDS_INIT_LIST_HEAD(&sc->list_pending_inbox);
+//		CDS_INIT_LIST_HEAD(&sc->list_pending_inbox);
 
 		sc->ht = ht_create_heap_timer();
 		if (!sc->ht)
@@ -67,13 +67,6 @@ void sc_outof_business(sorting_center_t* sc) {
 		messenger_t* pos, * n;
 		pthread_spin_lock(&sc->lock_inbox);
 
-		cds_list_for_each_entry_safe(pos,n,&sc->list_pending_inbox, elem_fifo) {
-			//cds_list_del_init(&pos->elem_fifo);
-			printf("1\n");
-			msger_fire(pos);
-			
-		}
-
 		cds_list_for_each_entry_safe(pos, n, &sc->list_complate_inbox, elem_fifo) {
 			printf("2\n");
 			msger_fire(pos);
@@ -105,23 +98,8 @@ void sc_outof_business(sorting_center_t* sc) {
 	}
 }
 
-void sc_queuing2pending_inbox(sorting_center_t* sc, cds_list_head_t* msger_fifo) {
-	cds_list_add_tail(msger_fifo, &sc->list_pending_inbox);
-	CDS_INIT_LIST_HEAD(msger_fifo);
-}
-
-void sc_merge_pending2complate_inbox(sorting_center_t* sc) {
-	pthread_spin_lock(&sc->lock_inbox);
-
-	if (cds_list_empty(&sc->list_pending_inbox) == 0) {
-		cds_list_splice_tail(&sc->list_pending_inbox, &sc->list_complate_inbox);
-		CDS_INIT_LIST_HEAD(&sc->list_pending_inbox);
-	}
-	pthread_spin_unlock(&sc->lock_inbox);
-}
-
 void sc_merge_box2complate_inbox(sorting_center_t* sc, cds_list_head_t* box) {
-	if (!cds_list_empty(&sc->list_pending_inbox)) {
+	if (!cds_list_empty(box)) {
 		pthread_spin_lock(&sc->lock_inbox);
 		cds_list_splice_tail(box, &sc->list_complate_inbox);
 		pthread_spin_unlock(&sc->lock_inbox);
@@ -147,11 +125,33 @@ void sc_submit_to_outbox(sorting_center_t* sc, cds_list_head_t* box) {
 	}
 }
 
+//从发件箱中揽件到box
+void sc_solicitation_inthe_outbox(sorting_center_t* sc, cds_list_head_t* box) {
+	pthread_spin_lock(&sc->lock_outbox);
+	if (!cds_list_empty(&sc->list_complate_outbox)) {
+		cds_list_splice_tail(&sc->list_complate_outbox, box);
+		CDS_INIT_LIST_HEAD(&sc->list_complate_outbox);
+	}
+	pthread_spin_unlock(&sc->lock_outbox);
+}
+
+
+void sc_bells1_took_the_letter(sorting_center_t* sc) {
+	char ctl = SORT_CLEN_SORTING_INBOX;
+	write(sc->bells[1], &ctl, sizeof(char));
+}
+
+//告知送来了信件
+void sc_bells1_sent_a_letter(sorting_center_t* sc) {
+	char ctl = SORT_NEED_SORTING_OUTBOX;
+	write(sc->bells[1], &ctl, sizeof(char));
+}
+
 void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box) {
-	messenger_t* pos, * n, * msger_seat;
+	messenger_t* pos, * n, * msger;
 	letter_t* l, * r;
 	letter_information_t* linfo;
-	uint32_t len;
+	uint32_t len, tehme;
 
 	//发件箱
 	cds_list_head_t outbox;
@@ -164,29 +164,42 @@ void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box) {
 
 			linfo = pos->information;
 			//请求信使的座位
-			msger_seat = 0;
+			//msger_seat = 0;
+			//招募一个信使, 原本是准备放入回调中去做的, 但是可能对使用者的成本太高了
+			msger = msger_hire();
+			if (!msger) {
+				msger_fire(pos);
+				continue;
+			}
 
 			if (!cds_list_empty(&pos->list_paragraphs)) {
 				cds_list_for_each_entry_safe(l, r, &pos->list_paragraphs, elem_paragraph) {
-					l->behav(linfo->hash, linfo->address, l->theme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->udata, linfo->udata_len, &msger_seat);
+					//如果这个session已经关闭读端, 那么不应该接收写的数据了
+					tehme = l->theme | (l->theme & THEME_DESTORY ? THEME_DESTORY : 0);
+					l->behav(linfo->hash, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->encode_fn, linfo->udata, linfo->udata_len, msger);
 					if (RWBUF_GET_LEN(&l->sentence)) 
 						pos->character_len -= RWBUF_GET_LEN(&l->sentence);
-					
 				}
 			}
-			msger_fire(pos);
 
 			//若信使收到了新的信件
-			if (msger_seat) {
-				cds_list_add_tail(&msger_seat->elem_fifo, &outbox);
-				msger_seat = 0;
-			}
+			if (!cds_list_empty(&msger->list_paragraphs) && !linfo->closed) {
+				memcpy(msger->information, pos->information, sizeof(letter_information_t));
+				cds_list_add_tail(&msger->elem_fifo, &outbox);
+			}else
+				msger_fire(msger);
+
+			//送信的信使任务完成
+			msger_fire(pos);
 		}
 	}
 
-	//让所有的信使排队进入收件箱
-	sc_submit_to_outbox(sc, &outbox);
-	
+	//让所有的信使排队放入收件箱
+	if (!cds_list_empty(&outbox)) {
+		sc_submit_to_outbox(sc, &outbox);
+		sc_bells1_sent_a_letter(sc);
+	}
+		
 }
 
 void* sc_thread_assembly_line(void* p) {

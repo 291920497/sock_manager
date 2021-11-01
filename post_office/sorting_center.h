@@ -33,11 +33,13 @@ typedef struct cds_list_head cds_list_head_t;
 
 typedef enum {
 	SORT_NEED_SORTING_INBOX,	//需要整理收件箱
-	SORT_CLEN_SORTING_INBOX,	//清理需要整理的状态
+	SORT_CLEN_SORTING_INBOX,	//清除收件箱需要整理的状态
+	SORT_NEED_SORTING_OUTBOX,	//需要整理发件箱
+	SORT_CLEN_SORTING_OUTBOX,	//清除发件箱需要整理的状态
 };
 
 typedef struct sorting_center {
-	cds_list_head_t list_pending_inbox;		//等待整理的收件箱
+//	cds_list_head_t list_pending_inbox;		//等待整理的收件箱
 	cds_list_head_t list_complate_inbox;	//整理完整的收件箱
 
 	cds_list_head_t list_complate_outbox;	//整理完成的发件箱
@@ -62,18 +64,23 @@ sorting_center_t* sc_start_business();
 
 void sc_outof_business(sorting_center_t* sc);
 
-void sc_queuing2pending_inbox(sorting_center_t* sc, cds_list_head_t* msger_fifo);
-
-void sc_merge_pending2complate_inbox(sorting_center_t* sc);
 
 void sc_merge_box2complate_inbox(sorting_center_t* sc, cds_list_head_t* box);
 
-//揽件
+//从收件箱中揽件到box
 void sc_solicitation_inthe_inbox(sorting_center_t* sc, cds_list_head_t* box);
 
 //发件
 void sc_submit_to_outbox(sorting_center_t* sc, cds_list_head_t* box);
 
+//从发件箱中揽件到box
+void sc_solicitation_inthe_outbox(sorting_center_t* sc, cds_list_head_t* box);
+
+//摇一下铃铛1, 并告知取走了信件
+void sc_bells1_took_the_letter(sorting_center_t* sc);
+
+//告知送来了信件
+void sc_bells1_sent_a_letter(sorting_center_t* sc);
 
 //如何处理从收件箱拿出来的数据
 void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box);

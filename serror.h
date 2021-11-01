@@ -17,7 +17,8 @@
 #define SERROR_TLS_SSL_ERR		(-105)	//协议发生错误
 #define SERROR_TLS_LIB_ERR		(-106)	//错误码参照ssl.h:1813, 结合ERR_get_error返回的错误码判断真实原因
 
-#define SERROR_SM_UNINIT		(-999)		//session manager尚未初始化
+//binary协议相关
+#define SERROR_BIN_SEND_LIMIT	(-200)	//封包后数据超过发送长度的限制
 
 
 

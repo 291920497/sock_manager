@@ -12,8 +12,10 @@
 
 
 //雇佣一个信使
-messenger_t* msger_hire(uint32_t letterhead_len) {
-	uint32_t len = sizeof(messenger_t) + letterhead_len;
+//messenger_t* msger_hire(uint32_t letterhead_len) {
+messenger_t* msger_hire() {
+	//uint32_t len = sizeof(messenger_t) + letterhead_len;
+	uint32_t len = sizeof(messenger_t);
 	messenger_t* msger = (messenger_t*)_msger_malloc(len);
 	if (!msger)
 		return 0;
@@ -60,6 +62,12 @@ int32_t msger_add_aparagraph_with_rwbuf(messenger_t* msger, rwbuf_t* sentence, t
 	lter->behav = behav;
 	lter->theme = theme;
 
+	//如果出现断开连接, 那么当前所有包都携带连接已断开的标识
+	if (theme & THEME_DESTORY) {
+		letter_information_t* linfo = msger->information;
+		linfo->closed = ~0;
+	}
+
 	//将这段话写入这封信
 	cds_list_add_tail(&lter->elem_paragraph, &msger->list_paragraphs);
 	return SERROR_OK;
@@ -77,8 +85,19 @@ int32_t msger_add_aparagraph_with_ram(messenger_t* msger, const char* start, uin
 		//这就不需要判断了
 		rwbuf_append(&rwb, start, len);
 	}
-	
+
+	//如果出现断开连接, 那么当前所有包都携带连接已断开的标识
+	if (theme & THEME_DESTORY) {
+		letter_information_t* linfo = msger->information;
+		linfo->closed = ~0;
+	}
+
 	return msger_add_aparagraph_with_rwbuf(msger, &rwb, theme, behav);
+}
+
+void msger_del_aparagraph(letter_t* lter) {
+	cds_list_del_init(&lter->elem_paragraph);
+	_msger_free(lter);
 }
 
 //查找与插入函数

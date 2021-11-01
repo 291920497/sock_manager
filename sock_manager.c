@@ -46,7 +46,9 @@
 typedef struct session_flag {
 	int32_t		closed : 1;
 //	int32_t		etmod : 1;
-	int32_t		comming : 1;				//是否有数据到来
+	int32_t		comming : 1;				//是否有数据到来, 预防带数据的fin报文, 它也应该被处理
+//	int32_t		cant_read : 1;				//不能读了
+//	int32_t		cant_send : 1;				//不能写了
 	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
 	int32_t		tls_handshake : 1;			//是否是ws websocket
 	int32_t		tls : 1;					//是否是wss websocket
@@ -87,7 +89,7 @@ typedef struct sock_session {
 	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
 	
 	uint8_t		rtry_number;	//尝试读的次数
-	//uint8_t		wtry_number;	//尝试写的次数
+	uint8_t		wtry_number;	//尝试写的次数
 	uint64_t	last_active;	//最后一次活跃的时间
 
 	void*		tls_ctx;		//wss使用到的上下文
@@ -123,6 +125,7 @@ typedef struct session_manager {
 	_sm_list_head list_session_cache;
 
 	cds_list_head_t list_fifo;		//排队的信使
+	cds_list_head_t list_outbox_fifo;	//等待放入发件箱的信使
 	rb_root_t rbroot_house_number;	//门牌号列表
 
 	sock_session_t* pipe0;
@@ -318,6 +321,7 @@ static int32_t sf_search_and_insert_msger_with_ram(sock_session_t*ss, const char
 	linfo->hash = ss->uuid_hash;
 	linfo->address = ss;
 	linfo->udata_len = ss->udatalen;
+	linfo->encode_fn = ss->uevent.encode_fn;
 	if (linfo->udata_len)
 		memcpy(linfo->udata, ss->udata, ss->udatalen);
 
@@ -412,7 +416,7 @@ static void sf_destruct_session(sock_session_t* ss) {
 	ss->ip[0] = 0;
 
 	ss->rtry_number = 0;
-	//ss->wtry_number = 0;
+	ss->wtry_number = 0;
 
 	ss->flag.closed = ~0;
 //	ss->flag.etmod = 0;
@@ -1419,8 +1423,85 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 	}
 }
 
-//触发器相关的是否需要做点什么
-static void sf_tigger_do_something(session_manager_t* sm) {
+static int32_t sf_session_write_data(sock_session_t* ss, const char* data, uint32_t len) {
+	uint32_t rt, old_len;
+	if (len) {
+		rt = rwbuf_append(&ss->wbuf, data, len);
+	}
+}
+
+//收集即将放入发件箱的信件
+static void sf_collect_letters_from_the_outbox(session_manager_t* sm) {
+	sock_session_t* ss;
+	messenger_t* pos, * n;
+	letter_t* l, * r;
+	letter_information_t* linfo;
+	int32_t rt, enough, old_wlen, character_len;
+	cds_list_for_each_entry_safe(pos, n, &sm->list_outbox_fifo, elem_fifo) {
+		//校验session是否依旧生效
+		linfo = pos->information;
+		ss = linfo->address;
+
+		if (linfo->hash == ss->uuid_hash) {
+			character_len = pos->character_len;
+			enough = rwbuf_enough(&ss->wbuf, pos->character_len);
+			old_wlen = RWBUF_GET_LEN(&ss->wbuf);
+
+			//enough = (!linfo->closed && enough) ? 1 : 0;
+
+			cds_list_for_each_entry_safe(l, r, &pos->list_paragraphs, elem_paragraph) {
+				if (l->theme == THEME_SEND) {
+					rt = rwbuf_append(&ss->wbuf, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence));
+					rwbuf_aband_front(&l->sentence, rt);
+					pos->character_len -= rt;
+
+					//如果收到了关闭套接字的指令, 
+					if (linfo->closed || !enough) {
+						if (RWBUF_GET_LEN(&l->sentence) == 0)
+							msger_del_aparagraph(l);
+					}
+
+					//if(linfo->closed)
+					
+				}
+				else if (l->theme == THEME_READY) {
+					ss->flag.ready = ~0;
+				}
+				else if (l->theme == THEME_DESTORY) {
+					//如果有数据, 且足够容纳, ,虽然后面可以有额外的数据, 但是不管了
+					if (character_len && enough)
+						break;
+					else {
+						sf_del_session(ss, 1);
+						break;
+					}
+				}
+			}
+
+			//判断是否修改了私有数据
+			if (memcmp(ss->udata, linfo->udata, linfo->udata_len)) {
+				memcpy(ss->udata, linfo->udata, linfo->udata_len);
+			}
+
+			//如果所有信件都已经上交, 那么开除这个信使
+			if (enough) {
+				msger_fire(pos);
+			}
+
+			//加入可写事件
+			if (RWBUF_GET_LEN(&ss->wbuf) > old_wlen)
+				sf_add_event(sm, ss, EV_WRITE);
+	
+		}
+		else {
+			//cds_list_del_init(&pos->elem_fifo);
+			msger_fire(pos);
+		}
+	}
+}
+
+//分拣中心是否需要做些什么
+static void sf_sorting_center_do_something(session_manager_t* sm) {
 	sock_session_t* ss = sm->pipe0;
 
 	int8_t* buf = RWBUF_START_PTR(&ss->rbuf);
@@ -1428,14 +1509,27 @@ static void sf_tigger_do_something(session_manager_t* sm) {
 	//首先尝试还原状态
 	if (len) {
 		for (int i = 0; i < len; ++i) {
-			if (buf[i] == SORT_CLEN_SORTING_INBOX) {
-				//触发器线程处理完则重置可读事件
+			switch (buf[i]) {
+			case SORT_CLEN_SORTING_INBOX:
+			{
 				sm->flag.tirgger_readable = 0;
+				break;
 			}
+			case SORT_NEED_SORTING_OUTBOX:
+			{
+				sc_solicitation_inthe_outbox(sm->sc, &sm->list_outbox_fifo);
+			}
+
+			}//switch
 		}
 		rwbuf_aband_front(&ss->rbuf, len);
 	}
 	
+	//判断待发送的队列是否需要做点什么
+	if (!cds_list_empty(&sm->list_outbox_fifo)) {
+		sf_collect_letters_from_the_outbox(sm);
+	}
+
 
 	//是否需要由当前线程来发起合并操作
 	if (sm->flag.merge) {
@@ -1483,6 +1577,7 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 
 	//init rb root 
 	CDS_INIT_LIST_HEAD(&(sm->list_fifo));
+	CDS_INIT_LIST_HEAD(&(sm->list_outbox_fifo));
 	sm->rbroot_house_number = RB_ROOT;
 
 	//create cache_session
@@ -1618,6 +1713,9 @@ void sm_exit_manager(session_manager_t* sm){
 	cds_list_for_each_entry_safe(l, r, &sm->list_fifo, elem_fifo) {
 		msger_fire(l);
 	}
+	//回收等待发送的信使
+	cds_list_for_each_entry_safe(l, r, &sm->list_outbox_fifo, elem_fifo)
+		msger_fire(l);
 
 #if (ENABLE_SSL)
 	SSL_COMP_free_compression_methods();
@@ -1626,15 +1724,6 @@ void sm_exit_manager(session_manager_t* sm){
 	EVP_cleanup();
 	CRYPTO_cleanup_all_ex_data();
 #endif
-
-	/*while (_SM_LIST_EMPTY(&sm->list_session_cache) == 0) {
-		pos = _SM_LIST_ENTRY(sm->list_session_cache.next, struct sock_session, elem_cache);
-		_SM_LIST_DEL_INIT(&pos->elem_cache);
-		rwbuf_free(&pos->rbuf);
-		rwbuf_free(&pos->wbuf);
-		printf("free: %p\n", pos);
-		_sm_free(pos);
-	}*/
 
 	//等待线程回收结束, 
 	while (sc_is_open(sm->sc)) {
@@ -2011,7 +2100,7 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	sf_pending_recv(sm);
 	sf_call_decode_fn(sm);
 	sf_clean_offline(sm);
-	sf_tigger_do_something(sm);
+	sf_sorting_center_do_something(sm);
 
 #if 1
 	/*behav_tirgger_t* pos, * n;
@@ -2030,7 +2119,7 @@ void sm_run(session_manager_t* sm) {
 	while (sm->flag.running) {
 		uint64_t waitms = ht_update_timer(sm->ht_timer);
 
-		if (_SM_LIST_EMPTY(&sm->list_pending_send) == 0 || _SM_LIST_EMPTY(&sm->list_pending_recv) == 0)
+		if (_SM_LIST_EMPTY(&sm->list_pending_send) == 0 || _SM_LIST_EMPTY(&sm->list_pending_recv) == 0 || !cds_list_empty(&sm->list_outbox_fifo))
 			waitms = 0;
 
 		//signal

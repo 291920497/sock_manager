@@ -25,11 +25,15 @@ typedef struct rwbuf {
 	int8_t*  buf;		//data buffer
 }rwbuf_t;
 
+void rwbuf_init(rwbuf_t* rwb);
+
 int32_t rwbuf_mlc(rwbuf_t* rwb, uint32_t capacity);
 
 int32_t rwbuf_relc(rwbuf_t* rwb, uint32_t capacity);
 
 void rwbuf_free(rwbuf_t* rwb);
+
+int32_t rwbuf_enough(rwbuf_t* rwb, uint32_t wlen);
 
 int32_t rwbuf_append(rwbuf_t* rwb, void* data, uint32_t data_len);
 

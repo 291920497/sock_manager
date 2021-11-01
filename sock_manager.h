@@ -32,10 +32,11 @@
 typedef struct sock_session sock_session_t;
 typedef struct session_manager session_manager_t;
 typedef struct messenger messenger_t;	//这个函数的声明在post_office/messenger/messenger.h中 在会调用加入消息,需要引入该头文件
+typedef struct rwbuf rwbuf_t;
 
 //typedef void(*)
-typedef void (*session_event_cb)(uint32_t hash, const void* session, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, void* udata, uint8_t udata_len, messenger_t** msger_seat);
-typedef void (*session_complate_pkg_cb)(sock_session_t*, char*, uint32_t, void*, uint8_t);
+
+//typedef void (*session_complate_pkg_cb)(sock_session_t*, char*, uint32_t, void*, uint8_t);
 
 //与heap_timer同步的回调函数类型, 不想引入头文件
 typedef void(*sm_heap_timer_cb)(uint32_t, void*, uint8_t);
@@ -46,6 +47,7 @@ typedef void(*sm_heap_timer_cb)(uint32_t, void*, uint8_t);
 typedef struct rcv_decode_mod {
 	uint32_t lenght_tirgger;				//输入: 当前回调的数据长度>=当前设定值 输出: 下次回调的时机>=设置的数据长度
 	uint32_t processed;						//输入: 上次回调已处理的数据索引 输出: 本次处理+上次处理的字节数 
+//	uint8_t fin;							//输出: 当前回调的数据是否是最后一个包
 }rcv_decode_mod_t;
 
 /*
@@ -62,11 +64,25 @@ typedef struct rcv_decode_mod {
 */
 typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* offset);
 
+
+/*
+*	session_encode_fn 说明
+*	data, 需要封包的完整数据
+*	len, 需要封包的数据长度, 如果对长度有限制, 也可以在这个函数中设置
+*	out_buf, 传出的参数, 这个函数将数据写入out_buf后, 有上层交给信使处理, 
+*	若这个buf是有数据的, 那么将产生一个THEME_SEND事件在读写线程中被处理
+*		val < 0: 指示自定义的错误, 或者使用serror.h内的错误码
+*		val = 0: 成功
+*/
+typedef int32_t (*session_encode_fn)(const char* data, uint32_t len, rwbuf_t* out_buf);
+
+typedef void (*session_event_cb)(uint32_t hash, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, session_encode_fn encode_fn, void* udata, uint8_t udata_len, messenger_t* msger);
+
 typedef struct session_behavior {
 	session_event_cb		conn_cb;		//创建连接回调
 	session_event_cb		disconn_cb;		//断开连接回调
 	session_decode_pkg_cb	decode_cb;		//用户自定义解包协议
-											//用户自定义封包协议
+	session_encode_fn		encode_fn;		//用户自定义封包协议
 	session_event_cb	complate_cb;		//解包成功回调
 }session_behavior_t;
 
