@@ -97,6 +97,7 @@ int32_t msger_add_aparagraph_with_ram(messenger_t* msger, const char* start, uin
 
 void msger_del_aparagraph(letter_t* lter) {
 	cds_list_del_init(&lter->elem_paragraph);
+	rwbuf_free(&lter->sentence);
 	_msger_free(lter);
 }
 

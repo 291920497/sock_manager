@@ -171,6 +171,8 @@ void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box) {
 				msger_fire(pos);
 				continue;
 			}
+			
+			//memcpy(msger->information, pos->information, sizeof(letter_information_t));
 
 			if (!cds_list_empty(&pos->list_paragraphs)) {
 				cds_list_for_each_entry_safe(l, r, &pos->list_paragraphs, elem_paragraph) {
@@ -267,3 +269,35 @@ void* sc_thread_assembly_line(void* p) {
 
 
 /******************************************************* 分拣中心 *******************************************************/
+
+
+/********************************************************* 前台 *********************************************************/
+
+//招募一个信使
+messenger_t* frontd_hire_messenger(uint32_t hash, void* session_address) {
+	messenger_t* msger = msger_hire();
+	if (!msger)
+		return NULL;
+
+	memset(msger, 0, sizeof(messenger_t));
+	msger->information->hash = hash;
+	msger->information->address = session_address;
+
+	return msger;
+}
+
+void frontd_fire_messenger(messenger_t* msger) {
+	msger_fire(msger);
+}
+
+void front_detach_messenger(sorting_center_t* sc, messenger_t* msger) {
+	if (!cds_list_empty(&msger->list_paragraphs))
+		msger_fire(msger);
+	else {
+		pthread_spin_lock(&sc->lock_outbox);
+		cds_list_add_tail(&msger->elem_fifo, &sc->list_complate_outbox);
+		pthread_spin_unlock(&sc->lock_outbox);
+	}
+}
+
+/********************************************************* 前台 *********************************************************/

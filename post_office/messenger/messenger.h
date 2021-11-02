@@ -18,6 +18,7 @@ typedef struct letter_information {
 	uint8_t udata[MAX_USERDATA_LEN];
 	uint8_t udata_len;
 	uint8_t closed;	//session是否已经关闭
+	uint8_t revise_udata;	//是否修改udata
 	void* address;	//session地址 组合寻址
 	session_encode_fn encode_fn;	//封包函数
 }letter_information_t;
@@ -49,7 +50,6 @@ typedef enum etheme {
 
 	THEME_SEND = 1 << 16,	//可写
 	THEME_READY = 1 << 17,	//设置准备就绪
-//	THEME_DEL_SESSION = 1 << 18,	//关闭该会话
 }theme_t;
 
 

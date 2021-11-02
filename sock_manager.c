@@ -727,6 +727,36 @@ static void sf_accpet_cb(sock_session_t* ss) {
 	} while (1);
 }
 
+//static uint32_t sf_send_fn(sock_session_t*ss, const char* data, uint32_t len) {
+//	uint32_t rt, old_wlen;
+//	if (!data || !len)
+//		return 0;
+//
+//	//如果无缓冲区可用
+//	if (!RWBUF_GET_UNUSELEN(&ss->wbuf)) {
+//		if (4 <= (++ss->wtry_number))
+//			goto sf_send_fn_failed;
+//		return 0;
+//	}
+//
+//	//old_wlen = RWBUF_GET_LEN(&ss->wbuf);
+//	rt = rwbuf_append(&ss->wbuf, data, len);
+//	
+//
+//sf_send_fn_failed:
+//	//如果是服务器则暂不回收, 等待重连
+//	if (_SM_LIST_EMPTY(&ss->elem_servers))
+//		sm_del_session(ss);
+//	else {
+//		if (ss->flag.comming)
+//			sf_del_session(ss, 0);
+//		else
+//			sf_del_session(ss, 1);
+//	}
+//
+//	return 0;
+//}
+
 static void sf_recv_cb(sock_session_t* ss) {
 	if (ss->flag.closed)
 		return;
@@ -1436,57 +1466,80 @@ static void sf_collect_letters_from_the_outbox(session_manager_t* sm) {
 	messenger_t* pos, * n;
 	letter_t* l, * r;
 	letter_information_t* linfo;
-	int32_t rt, enough, old_wlen, character_len;
+	int32_t rt, enough, old_wlen, character_len, writed, fin;
 	cds_list_for_each_entry_safe(pos, n, &sm->list_outbox_fifo, elem_fifo) {
 		//校验session是否依旧生效
 		linfo = pos->information;
 		ss = linfo->address;
 
 		if (linfo->hash == ss->uuid_hash) {
-			character_len = pos->character_len;
-			enough = rwbuf_enough(&ss->wbuf, pos->character_len);
+			//character_len = pos->character_len;
+			//rwbuf_replan(&ss->wbuf);
+			rwbuf_enough(&ss->wbuf, pos->character_len);
 			old_wlen = RWBUF_GET_LEN(&ss->wbuf);
-
+			writed = 0;
+			fin = 0;
 			//enough = (!linfo->closed && enough) ? 1 : 0;
 
 			cds_list_for_each_entry_safe(l, r, &pos->list_paragraphs, elem_paragraph) {
 				if (l->theme == THEME_SEND) {
-					rt = rwbuf_append(&ss->wbuf, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence));
-					rwbuf_aband_front(&l->sentence, rt);
-					pos->character_len -= rt;
+					if (RWBUF_GET_UNUSELEN(&ss->wbuf)) {
+						if (RWBUF_GET_LEN(&l->sentence)) {
+							rt = rwbuf_append(&ss->wbuf, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence));
+							if (rt) {
+								rwbuf_aband_front(&l->sentence, rt);
+								pos->character_len -= rt;
+								writed += rt;
 
-					//如果收到了关闭套接字的指令, 
-					if (linfo->closed || !enough) {
-						if (RWBUF_GET_LEN(&l->sentence) == 0)
+								//写成功, 那么清零
+								ss->wtry_number = 0;
+
+								if (!RWBUF_GET_LEN(&l->sentence))
+									msger_del_aparagraph(l);
+								else
+									break;	//如果尚未写完, 那么应当保存当前buf, 留待下一次写
+							}
+						}
+						else
 							msger_del_aparagraph(l);
 					}
-
-					//if(linfo->closed)
-					
+					else {
+						//缓冲区满,
+						if (4 <= ++ss->wtry_number)
+							fin = 1;
+						break;
+					}
+				}
+				else if (l->theme == THEME_DESTORY) {
+					if (writed)
+						break;
+					else {
+						//这里删除session有2种可能
+						//1. 列表头即是THEME_DESTORY
+						//2. 尝试了
+						sm_del_session(ss);
+						fin = 1;
+						break;
+					}
 				}
 				else if (l->theme == THEME_READY) {
 					ss->flag.ready = ~0;
 				}
-				else if (l->theme == THEME_DESTORY) {
-					//如果有数据, 且足够容纳, ,虽然后面可以有额外的数据, 但是不管了
-					if (character_len && enough)
-						break;
-					else {
-						sf_del_session(ss, 1);
-						break;
-					}
-				}
-			}
+			}//for
 
 			//判断是否修改了私有数据
-			if (memcmp(ss->udata, linfo->udata, linfo->udata_len)) {
-				memcpy(ss->udata, linfo->udata, linfo->udata_len);
+			if (linfo->udata_len <= ss->udatalen) {
+				if (memcmp(ss->udata, linfo->udata, linfo->udata_len)) {
+					memcpy(ss->udata, linfo->udata, linfo->udata_len);
+				}
 			}
+			
 
 			//如果所有信件都已经上交, 那么开除这个信使
-			if (enough) {
+
+			//如果缓冲区尚有空间, 但是
+			if (fin || cds_list_empty(&pos->list_paragraphs))
 				msger_fire(pos);
-			}
 
 			//加入可写事件
 			if (RWBUF_GET_LEN(&ss->wbuf) > old_wlen)
