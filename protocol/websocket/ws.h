@@ -2,14 +2,17 @@
 #define _WS_H_
 
 #include "../../sock_manager.h"
+#include "../../tools/rwbuf/rwbuf.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif//__cplusplus
-
+;
 //void web_protocol_recv(sock_session_t* ss);
 
+int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* offset);
 
+int32_t ws_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf);
 
 #ifdef __cplusplus
 }

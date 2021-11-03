@@ -1,6 +1,9 @@
 #include "sorting_center.h"
 #include "front_desk.h"
 #include "messenger/messenger.h"
+//#include "../sock_manager.h"
+
+#include "../serror.h"
 
 
 
@@ -178,7 +181,10 @@ void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box) {
 				cds_list_for_each_entry_safe(l, r, &pos->list_paragraphs, elem_paragraph) {
 					//如果这个session已经关闭读端, 那么不应该接收写的数据了
 					tehme = l->theme | (l->theme & THEME_DESTORY ? THEME_DESTORY : 0);
-					l->behav(linfo->hash, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->encode_fn, linfo->udata, linfo->udata_len, msger);
+					memcpy(&msger->information->scc, &linfo->scc, sizeof(sortingcenter_ctx_t));
+
+					//l->behav(linfo->hash, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->encode_fn, linfo->udata, linfo->udata_len, msger);
+					l->behav(&msger->information->scc, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, msger->information->scc.encode_fn, linfo->udata, linfo->udata_len, msger);
 					if (RWBUF_GET_LEN(&l->sentence)) 
 						pos->character_len -= RWBUF_GET_LEN(&l->sentence);
 				}
@@ -273,22 +279,41 @@ void* sc_thread_assembly_line(void* p) {
 
 /********************************************************* 前台 *********************************************************/
 
-//招募一个信使
-messenger_t* frontd_hire_messenger(uint32_t hash, void* session_address) {
+messenger_t* frontd_hire_messenger(sortingcenter_ctx_t* ss_ctx) {
 	messenger_t* msger = msger_hire();
 	if (!msger)
 		return NULL;
 
-	memset(msger, 0, sizeof(messenger_t));
-	msger->information->hash = hash;
-	msger->information->address = session_address;
-
+	//msger->information->hash = ss_ctx->hash;
+	//msger->information->address = ss_ctx->session_address;
+	//msger->information->encode_fn = ss_ctx->encode_fn;
+	if (ss_ctx) 
+		memcpy(&msger->information->scc, ss_ctx, sizeof(sortingcenter_ctx_t));
 	return msger;
 }
 
 void frontd_fire_messenger(messenger_t* msger) {
 	msger_fire(msger);
 }
+
+void front_submit_sorting_center(session_manager_t* sm, messenger_t* msger) {
+	sorting_center_t* sc = sm_sortingcenter(sm);
+	if (!sc)
+		return;
+
+	if (!cds_list_empty(&msger->list_paragraphs))
+		msger_fire(msger);
+	else {
+		//防止在回调中提交由回调带回的msger
+		if (cds_list_empty(&msger->elem_fifo)) {
+			pthread_spin_lock(&sc->lock_outbox);
+			cds_list_add_tail(&msger->elem_fifo, &sc->list_complate_outbox);
+			pthread_spin_unlock(&sc->lock_outbox);
+		}
+	}
+}
+
+
 
 void front_detach_messenger(sorting_center_t* sc, messenger_t* msger) {
 	if (!cds_list_empty(&msger->list_paragraphs))
@@ -298,6 +323,80 @@ void front_detach_messenger(sorting_center_t* sc, messenger_t* msger) {
 		cds_list_add_tail(&msger->elem_fifo, &sc->list_complate_outbox);
 		pthread_spin_unlock(&sc->lock_outbox);
 	}
+}
+
+//int32_t frontd_add_aparagraph_with_ram(messenger_t* msger, const char* start, uint32_t len, theme_t theme, session_event_cb behav) {
+//	int rt;
+//	rwbuf_t rwb;
+//	rwbuf_init(&rwb);
+//
+//	if (len && start) {
+//		if ((rt = rwbuf_mlc(&rwb, len)) != SERROR_OK)
+//			return rt;
+//
+//		//这就不需要判断了
+//		rwbuf_append(&rwb, start, len);
+//	}
+//
+//	//如果出现断开连接, 那么当前所有包都携带连接已断开的标识
+//	if (theme & THEME_DESTORY) {
+//		letter_information_t* linfo = msger->information;
+//		linfo->closed = ~0;
+//	}
+//
+//	return msger_add_aparagraph_with_rwbuf(msger, &rwb, theme, behav);
+//}
+
+
+int32_t frontd_add_aparagraph_with_rwbuf(messenger_t* msger, rwbuf_t* sentence, theme_t theme) {
+	letter_t* lter = _msger_malloc(sizeof(letter_t));
+	if (!lter)
+		return SERROR_SYSAPI_ERR;
+
+	memset(lter, 0, sizeof(letter_t));
+	//	CDS_INIT_LIST_HEAD(&lter->elem_paragraph);
+
+		//应对什么消息也不发送
+	if (sentence) {
+		msger->character_len += RWBUF_GET_LEN(sentence);
+		rwbuf_swap(sentence, &lter->sentence);
+	}
+
+	lter->behav = 0;
+	lter->theme = theme;
+
+	//如果出现断开连接, 那么当前所有包都携带连接已断开的标识
+	if (theme & THEME_DESTORY) {
+		letter_information_t* linfo = msger->information;
+		linfo->closed = ~0;
+	}
+
+	//将这段话写入这封信
+	cds_list_add_tail(&lter->elem_paragraph, &msger->list_paragraphs);
+	return SERROR_OK;
+}
+
+int32_t frontd_add_aparagraph_after_encoding_with_ram(messenger_t* msger, const char* data, uint32_t len, theme_t theme) {
+	int rt;
+	rwbuf_t rwb;
+	rwbuf_init(&rwb);
+
+
+	if (msger->information->scc.encode_fn) {
+		if (data && len)
+			msger->information->scc.encode_fn(data, len, &rwb);
+	}
+	else {
+		if(data && len)
+			rwbuf_append(&rwb, data, len);
+	}
+
+	if (theme & THEME_DESTORY) {
+		letter_information_t* linfo = msger->information;
+		linfo->closed = ~0;
+	}
+
+	return msger_add_aparagraph_with_rwbuf(msger, &rwb, theme, 0);
 }
 
 /********************************************************* 前台 *********************************************************/

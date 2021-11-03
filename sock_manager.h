@@ -33,6 +33,7 @@ typedef struct sock_session sock_session_t;
 typedef struct session_manager session_manager_t;
 typedef struct messenger messenger_t;	//这个函数的声明在post_office/messenger/messenger.h中 在会调用加入消息,需要引入该头文件
 typedef struct rwbuf rwbuf_t;
+typedef struct sortingcenter_ctx sortingcenter_ctx_t;
 
 //typedef void(*)
 
@@ -76,7 +77,7 @@ typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t
 */
 typedef int32_t (*session_encode_fn)(const char* data, uint32_t len, rwbuf_t* out_buf);
 
-typedef void (*session_event_cb)(uint32_t hash, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, session_encode_fn encode_fn, void* udata, uint8_t udata_len, messenger_t* msger);
+typedef void (*session_event_cb)(sortingcenter_ctx_t* scc, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, session_encode_fn encode_fn, void* udata, uint8_t udata_len, messenger_t* msger);
 
 typedef struct session_behavior {
 	session_event_cb		conn_cb;		//创建连接回调
@@ -87,11 +88,18 @@ typedef struct session_behavior {
 }session_behavior_t;
 
 
-typedef struct session_tls {
+typedef struct tls_operate {
 	const char* ca;							//ca证书路径
 	const char* cert;						//证书路径
 	const char* key;						//证书密钥路径
-}session_tls_t;
+}tls_operate_t;
+
+//分拣中心需要的参数
+typedef struct sortingcenter_ctx {
+	uint32_t hash;
+	void* session_address;
+	session_encode_fn encode_fn;
+}sortingcenter_ctx_t;
 
 
 #ifdef __cplusplus
@@ -109,7 +117,7 @@ void sm_exit_manager(session_manager_t* sm);
 void sm_set_run(session_manager_t* sm, uint8_t run);
 
 sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
-	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len);
+	uint8_t enable_tls, tls_operate_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
 sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
 	uint8_t enable_tls, void* server_ctx, uint8_t add_online, session_behavior_t behavior, void* udata, uint8_t udata_len);
@@ -122,6 +130,12 @@ uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t dela
 void sm_del_timer(session_manager_t* sm, uint32_t timer_id, uint32_t is_incallback);
 
 void sm_del_session(sock_session_t* ss);
+
+//void sm_set_ready(sock_session_t* ss, uint8_t ready);
+
+void* sm_sortingcenter(session_manager_t* sm);
+
+void sm_soringcenter_ctx(sock_session_t* ss, sortingcenter_ctx_t* out_ctx);
 
 int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int));
 

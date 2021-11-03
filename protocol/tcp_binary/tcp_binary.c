@@ -2,11 +2,14 @@
 
 #include "../../serror.h"
 
+//注意这个类型变为uint16_t, 那么uint32_t的长度可能发生截断, 入参就有了讲究
+#define TBINARY_LENGTH_TYPE uint32_t
+//#define TBINARY_LENGTH_TYPE uint16_t
 
 #define BINARY_MAX_SEND 8192
 #define BINARY_MAX_RECV 16384
 
-int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, TBINARY_LENGTH_TYPE len, rcv_decode_mod_t* mod, uint32_t* offset) {
+int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* offset) {
 	int type_length = sizeof(TBINARY_LENGTH_TYPE);
 
 	//长度标志不完整
@@ -53,7 +56,7 @@ int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, TBINARY_LENGTH_TYPE
 	return 0;
 }
 
-int32_t tcp_binary_encode_fn(const char* data, TBINARY_LENGTH_TYPE len, rwbuf_t* out_buf) {
+int32_t tcp_binary_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf) {
 	if (!data || !len)
 		return SERROR_INPARAM_ERR;
 

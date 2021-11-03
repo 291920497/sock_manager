@@ -31,7 +31,7 @@
 
 typedef struct cds_list_head cds_list_head_t;
 
-typedef enum {
+enum {
 	SORT_NEED_SORTING_INBOX,	//需要整理收件箱
 	SORT_CLEN_SORTING_INBOX,	//清除收件箱需要整理的状态
 	SORT_NEED_SORTING_OUTBOX,	//需要整理发件箱

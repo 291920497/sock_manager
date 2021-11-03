@@ -29,6 +29,8 @@
 //massgener
 //#include "post_office/"
 #include "post_office/sorting_center.h"
+//引入theme
+#include "post_office/front_desk.h"
 #include "post_office/messenger/messenger.h"
 
 #if (ENABLE_SSL)
@@ -318,10 +320,10 @@ static int32_t sf_search_and_insert_msger_with_ram(sock_session_t*ss, const char
 		return SERROR_SYSAPI_ERR;
 
 	letter_information_t* linfo = msger->information;
-	linfo->hash = ss->uuid_hash;
-	linfo->address = ss;
+	linfo->scc.hash = ss->uuid_hash;
+	linfo->scc.session_address = ss;
 	linfo->udata_len = ss->udatalen;
-	linfo->encode_fn = ss->uevent.encode_fn;
+	linfo->scc.encode_fn = ss->uevent.encode_fn;
 	if (linfo->udata_len)
 		memcpy(linfo->udata, ss->udata, ss->udatalen);
 
@@ -727,35 +729,7 @@ static void sf_accpet_cb(sock_session_t* ss) {
 	} while (1);
 }
 
-//static uint32_t sf_send_fn(sock_session_t*ss, const char* data, uint32_t len) {
-//	uint32_t rt, old_wlen;
-//	if (!data || !len)
-//		return 0;
-//
-//	//如果无缓冲区可用
-//	if (!RWBUF_GET_UNUSELEN(&ss->wbuf)) {
-//		if (4 <= (++ss->wtry_number))
-//			goto sf_send_fn_failed;
-//		return 0;
-//	}
-//
-//	//old_wlen = RWBUF_GET_LEN(&ss->wbuf);
-//	rt = rwbuf_append(&ss->wbuf, data, len);
-//	
-//
-//sf_send_fn_failed:
-//	//如果是服务器则暂不回收, 等待重连
-//	if (_SM_LIST_EMPTY(&ss->elem_servers))
-//		sm_del_session(ss);
-//	else {
-//		if (ss->flag.comming)
-//			sf_del_session(ss, 0);
-//		else
-//			sf_del_session(ss, 1);
-//	}
-//
-//	return 0;
-//}
+
 
 static void sf_recv_cb(sock_session_t* ss) {
 	if (ss->flag.closed)
@@ -1375,6 +1349,8 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 							sm_del_session(ss);
 						else
 							sf_del_session(ss, 1);
+
+						//这里可以打印错误
 						break;
 					}
 
@@ -1393,31 +1369,30 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					}*/
 
 					//收到一个完整的数据包
-					ev = THEME_RECV | (ss->flag.closed ? THEME_DESTORY : 0);
+					//ev = THEME_RECV | (ss->flag.closed ? THEME_DESTORY : 0);
+					
 
 					//若在当前回调中 第一次调用,那么找到这个信使, 后续的信件就直接递交给信使
-					if (!msger) {
-						if (sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK) {
-							//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
-							cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
-							sf_set_flag_need_merge(ss->sm, 1);
-						}
-							
-					}
-					else {
-						if (msger_add_aparagraph_with_ram(msger, data + offset, rt - offset, ev, ss->uevent.complate_cb) == SERROR_OK) {
-							//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
-							cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
-							sf_set_flag_need_merge(ss->sm, 1);
-						}
-					}
+					
+					//若需要处理的数据大于1
+					if (rt - offset) {
+						ev = ss->flag.closed ? THEME_RECV_AND_DESTROY : THEME_RECV;
+						if (!msger) {
+							if (sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK) {
+								//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+								cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+								sf_set_flag_need_merge(ss->sm, 1);
+							}
 
-					/*if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, ev, ss->uuid_hash, ss, data + offset, rt - offset, ss->uevent.complate_cb, ss->udata, ss->udatalen) == SERROR_OK)
-						sf_set_flag_need_merge(ss->sm, 1);*/
-
-					/*if(sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK)
-						sf_set_flag_need_merge(ss->sm, 1);*/
-						//错误
+						}
+						else {
+							if (msger_add_aparagraph_with_ram(msger, data + offset, rt - offset, ev, ss->uevent.complate_cb) == SERROR_OK) {
+								//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
+								cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+								sf_set_flag_need_merge(ss->sm, 1);
+							}
+						}
+					}
 
 					//此时不管怎么样都产生了一个信使
 					if (ss->flag.closed && ss->uevent.disconn_cb)
@@ -1470,9 +1445,9 @@ static void sf_collect_letters_from_the_outbox(session_manager_t* sm) {
 	cds_list_for_each_entry_safe(pos, n, &sm->list_outbox_fifo, elem_fifo) {
 		//校验session是否依旧生效
 		linfo = pos->information;
-		ss = linfo->address;
+		ss = linfo->scc.session_address;
 
-		if (linfo->hash == ss->uuid_hash) {
+		if (linfo->scc.hash == ss->uuid_hash) {
 			//character_len = pos->character_len;
 			//rwbuf_replan(&ss->wbuf);
 			rwbuf_enough(&ss->wbuf, pos->character_len);
@@ -1522,9 +1497,9 @@ static void sf_collect_letters_from_the_outbox(session_manager_t* sm) {
 						break;
 					}
 				}
-				else if (l->theme == THEME_READY) {
+				/*else if (l->theme == THEME_READY) {
 					ss->flag.ready = ~0;
-				}
+				}*/
 			}//for
 
 			//判断是否修改了私有数据
@@ -1608,6 +1583,58 @@ static void sf_sorting_center_do_something(session_manager_t* sm) {
 
 
 }
+
+//以下函数可以被其他模块导入
+uint32_t sf_send_fn(sock_session_t* ss, const char* data, uint32_t len) {
+	uint32_t enough, rt, old_wlen;
+
+	if (!data || !len)
+		return 0;
+
+	enough = rwbuf_enough(&ss->wbuf, len);
+	old_wlen = RWBUF_GET_LEN(&ss->wbuf);
+
+	if (RWBUF_GET_UNUSELEN(&ss->wbuf)) {
+		rt = rwbuf_append(&ss->wbuf, data, len);
+		if (rt)
+			sf_add_event(ss->sm, ss, EV_WRITE);
+		return rt;
+	}
+	else {
+		ss->wtry_number++;
+		if (4 <= ss->wtry_number) {
+			if (_SM_LIST_EMPTY(&ss->elem_servers))
+				sm_del_session(ss);
+			else {
+				if (ss->flag.comming)
+					sf_del_session(ss, 0);
+				else
+					sf_del_session(ss, 1);
+			}
+		}
+	}
+	return 0;
+}
+
+void sf_set_ready(sock_session_t* ss, uint8_t ready) {
+	if (ss) {
+		if (ready)
+			ss->flag.ready = ~0;
+		else
+			ss->flag.ready = 0;
+	}
+}
+
+uint8_t sf_get_ready(sock_session_t* ss) {
+	return ss->flag.ready;
+}
+
+rwbuf_t* sf_get_wbuf(sock_session_t* ss) {
+	return &ss->wbuf;
+}
+
+//以上可以被其他模块导入
+
 
 session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	session_behavior_t behav = { 0,0,0,0 };
@@ -1806,7 +1833,7 @@ void sm_set_run(session_manager_t* sm, uint8_t run) {
 
 
 sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
-	uint8_t enable_tls, session_tls_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len) {
+	uint8_t enable_tls, tls_operate_t tls, session_behavior_t behavior, void* udata, uint8_t udata_len) {
 
 	sock_session_t* ss = 0;
 	int rt, err, fd, ev, optval = 1;
@@ -2113,6 +2140,20 @@ void sm_del_session(sock_session_t* ss) {
 	_SM_LIST_ADD_TAIL(&ss->elem_offline, &ss->sm->list_offline);
 
 	//因为fd尚未回收, 统一在一个函数内操作,减少用户态->内核态的切换
+}
+
+void* sm_sortingcenter(session_manager_t* sm) {
+	if (sm)
+		return sm->sc;
+	return 0;
+}
+
+void sm_soringcenter_ctx(sock_session_t* ss, sortingcenter_ctx_t* out_ctx) {
+	if (ss && out_ctx) {
+		out_ctx->hash = ss->uuid_hash;
+		out_ctx->encode_fn = ss->uevent.encode_fn;
+		out_ctx->session_address = ss;
+	}
 }
 
 int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int)) {

@@ -9,18 +9,25 @@
 
 #include "../../sock_manager.h"
 
+#define _msger_malloc malloc
+#define _msger_realloc realloc
+#define _msger_free free
+
 typedef struct cds_list_head cds_list_head_t;
 typedef struct rb_root rb_root_t;
 typedef struct rb_node rb_node_t;
+typedef enum etheme theme_t;
 
 typedef struct letter_information {
-	uint32_t hash;
+//	uint32_t hash;
 	uint8_t udata[MAX_USERDATA_LEN];
 	uint8_t udata_len;
 	uint8_t closed;	//session是否已经关闭
 	uint8_t revise_udata;	//是否修改udata
-	void* address;	//session地址 组合寻址
-	session_encode_fn encode_fn;	//封包函数
+//	void* address;	//session地址 组合寻址
+//	session_encode_fn encode_fn;	//封包函数
+
+	sortingcenter_ctx_t scc;
 }letter_information_t;
 
 //一封信, 包含多个段落+一句话
@@ -40,18 +47,6 @@ typedef struct messenger {
 //	char information[0];				//变长数组, 添加自己的信息
 	letter_information_t information[1];//迎合之前的变长数组, 使用这个hire入参将无效
 }messenger_t;
-
-//后期可以根据需要来修改这些内容
-
-typedef enum etheme {
-	THEME_CREATE = 1 << 0,	//连接被创建
-	THEME_DESTORY = 1 << 2,	//连接被销毁
-	THEME_RECV = 1 << 3,	//可读
-
-	THEME_SEND = 1 << 16,	//可写
-	THEME_READY = 1 << 17,	//设置准备就绪
-}theme_t;
-
 
 
 #ifdef __cplusplus

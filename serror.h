@@ -20,6 +20,12 @@
 //binary协议相关
 #define SERROR_BIN_SEND_LIMIT	(-200)	//封包后数据超过发送长度的限制
 
+//ws协议相关
+#define SERROR_WS_HANDSHAKE_ERR	(-300)	//握手失败
+#define SERROR_WS_FIN			(-301)	//结束报文
+#define SERROR_WS_NO_MASK		(-302)	//没有掩码
+#define SERROR_WS_OVERFLOW		(-303)	//长度溢出初始化时提供的缓冲区
+
 
 
 #endif//_SERROR_H_

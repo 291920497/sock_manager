@@ -4,11 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+//引入theme
+#include "../front_desk.h"
 #include "../../serror.h"
 
-#define _msger_malloc malloc
-#define _msger_realloc realloc
-#define _msger_free free
+
 
 
 //雇佣一个信使
@@ -109,9 +109,10 @@ messenger_t* msger_search(rb_root_t* root, uint32_t hash) {
 		messenger_t* this_node = caa_container_of(node, messenger_t, rbnode_house_number);
 		letter_information_t* this_info = this_node->information;
 
-		if (hash < this_info->hash)
+		//if (hash < this_info->hash)
+		if (hash < this_info->scc.hash)
 			node = node->rb_left;
-		else if (hash < this_info->hash)
+		else if (hash < this_info->scc.hash)
 			node = node->rb_right;
 		else
 			return this_node;
@@ -133,9 +134,9 @@ int32_t msger_insert(rb_root_t* root, messenger_t* msger) {
 
 
 		parent = *new_node;
-		if (linfo ->hash < rinfo->hash)
+		if (linfo->scc.hash < rinfo->scc.hash)
 			new_node = &((*new_node)->rb_left);
-		else if (linfo->hash < rinfo->hash)
+		else if (linfo->scc.hash < rinfo->scc.hash)
 			new_node = &((*new_node)->rb_right);
 		else
 			return 0;
