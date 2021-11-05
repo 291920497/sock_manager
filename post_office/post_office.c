@@ -184,6 +184,7 @@ void sc_how2do_example(sorting_center_t* sc, cds_list_head_t* box) {
 					memcpy(&msger->information->scc, &linfo->scc, sizeof(sortingcenter_ctx_t));
 
 					//l->behav(linfo->hash, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->encode_fn, linfo->udata, linfo->udata_len, msger);
+					l->behav(&msger->information->scc, tehme, RWBUF_START_PTR(&l->sentence), RWBUF_GET_LEN(&l->sentence), pos->character_len, linfo->udata, linfo->udata_len, msger);
 					if (RWBUF_GET_LEN(&l->sentence)) 
 						pos->character_len -= RWBUF_GET_LEN(&l->sentence);
 				}
