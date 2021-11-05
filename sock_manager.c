@@ -47,15 +47,13 @@
 //sock_session 的状态机
 typedef struct session_flag {
 	int32_t		closed : 1;
-//	int32_t		etmod : 1;
 	int32_t		comming : 1;				//是否有数据到来, 预防带数据的fin报文, 它也应该被处理
-//	int32_t		cant_read : 1;				//不能读了
-//	int32_t		cant_send : 1;				//不能写了
 	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
-	int32_t		tls_handshake : 1;			//是否是ws websocket
-	int32_t		tls : 1;					//是否是wss websocket
+	int32_t		tls_handshake : 1;			//是否tls协议握手完成
+	int32_t		tls : 1;					//是否启动tls协议
 	int32_t		tls_rwantw : 1;				//是否想在可读事件发生的时候调用SSL_write
 	int32_t		tls_wwantr : 1;				//是否期望在可写事件发生的时候调用SSL_read
+	int32_t		reconnect : 1;				//是否在断开连接后尝试重连
 }session_flag_t;
 
 //session manager的状态机
@@ -95,6 +93,7 @@ typedef struct sock_session {
 	uint64_t	last_active;	//最后一次活跃的时间
 
 	void*		tls_ctx;		//wss使用到的上下文
+
 
 	rcv_decode_mod_t		decode_mod;		//解包模块
 	session_rw				recv_cb;		//可读事件回调
@@ -1234,6 +1233,56 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 }
 
 
+//以下函数可以被其他模块导入
+uint32_t sf_send_fn(sock_session_t* ss, const char* data, uint32_t len) {
+	uint32_t enough, rt, old_wlen;
+
+	if (!data || !len)
+		return 0;
+
+	enough = rwbuf_enough(&ss->wbuf, len);
+	old_wlen = RWBUF_GET_LEN(&ss->wbuf);
+
+	if (RWBUF_GET_UNUSELEN(&ss->wbuf)) {
+		rt = rwbuf_append(&ss->wbuf, data, len);
+		if (rt)
+			sf_add_event(ss->sm, ss, EV_WRITE);
+		return rt;
+	}
+	else {
+		ss->wtry_number++;
+		if (4 <= ss->wtry_number) {
+			if (_SM_LIST_EMPTY(&ss->elem_servers))
+				sm_del_session(ss);
+			else {
+				if (ss->flag.comming)
+					sf_del_session(ss, 0);
+				else
+					sf_del_session(ss, 1);
+			}
+		}
+	}
+	return 0;
+}
+
+void sf_set_ready(sock_session_t* ss, uint8_t ready) {
+	if (ss) {
+		if (ready)
+			ss->flag.ready = ~0;
+		else
+			ss->flag.ready = 0;
+	}
+}
+
+uint8_t sf_get_ready(sock_session_t* ss) {
+	return ss->flag.ready;
+}
+
+rwbuf_t* sf_get_wbuf(sock_session_t* ss) {
+	return &ss->wbuf;
+}
+
+//以上可以被其他模块导入
 
 //处理写未决
 static void sf_pending_send(session_manager_t* sm) {
@@ -1320,7 +1369,7 @@ static void sf_clean_offline(session_manager_t* sm) {
 
 //回调解包函数
 static void sf_call_decode_fn(session_manager_t* sm) {
-	int32_t rt, len, ev;
+	int32_t rt, len, ev, opt;
 	uint32_t offset;
 	int8_t* data;
 	sock_session_t* ss, * n;
@@ -1334,6 +1383,7 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 		msger = 0;
 
 		do {
+			opt = 0;
 			offset = 0;
 			len = RWBUF_GET_LEN(rbuf);
 			data = RWBUF_START_PTR(rbuf);
@@ -1378,26 +1428,33 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					if (rt - offset) {
 						ev = ss->flag.closed ? THEME_RECV_AND_DESTROY : THEME_RECV;
 						if (!msger) {
-							if (sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK) {
-								//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
-								cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
-								sf_set_flag_need_merge(ss->sm, 1);
-							}
-
+							if (sf_search_and_insert_msger_with_ram(ss, data + offset, rt - offset, ev, ss->uevent.complate_cb, &msger) == SERROR_OK)
+								opt = 1;
 						}
 						else {
-							if (msger_add_aparagraph_with_ram(msger, data + offset, rt - offset, ev, ss->uevent.complate_cb) == SERROR_OK) {
-								//sc_queuing2pending_inbox(ss->sm->sc, &msger->elem_fifo);
-								cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
-								sf_set_flag_need_merge(ss->sm, 1);
-							}
+							if (msger_add_aparagraph_with_ram(msger, data + offset, rt - offset, ev, ss->uevent.complate_cb) == SERROR_OK) 
+								opt = 1;
 						}
 					}
 
+					if (!msger) {
+						if (ss->flag.closed && ss->uevent.disconn_cb)
+							if (sf_search_and_insert_msger_with_ram(ss, 0, 0, THEME_DESTORY, ss->uevent.complate_cb, &msger) == SERROR_OK) 
+								opt = 1;
+					}
+					else {
+						if (ss->flag.closed && ss->uevent.disconn_cb)
+							if (msger_add_aparagraph_with_ram(msger, 0, 0, THEME_DESTORY, ss->uevent.disconn_cb) == SERROR_OK) 
+								opt = 1;	
+					}
+
+					if (opt) {
+						cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+						sf_set_flag_need_merge(ss->sm, 1);
+					}
+
 					//此时不管怎么样都产生了一个信使
-					if (ss->flag.closed && ss->uevent.disconn_cb)
-						if(msger_add_aparagraph_with_ram(msger, 0, 0, THEME_DESTORY, ss->uevent.disconn_cb) == SERROR_OK)
-							sf_set_flag_need_merge(ss->sm, 1);
+					
 						/*if(sf_search_and_insert_msger_with_ram(ss, 0, 0, TEV_DESTROY, ss->uevent.disconn_cb) == SERROR_OK)
 							sf_set_flag_need_merge(ss->sm, 1);*/
 						/*if (tg_rwtrd_add_rcvmsg2tmp(sm->tg, TEV_DESTROY, ss->uuid_hash, ss, 0, 0, ss->uevent.disconn_cb, ss->udata, ss->udatalen) == SERROR_OK)
@@ -1560,80 +1617,41 @@ static void sf_sorting_center_do_something(session_manager_t* sm) {
 
 
 	//是否需要由当前线程来发起合并操作
-	if (sm->flag.merge) {
+	if (sm->flag.merge && sm->flag.tirgger_readable == 0) {
 		//tg_rwtrd_merge_rcvmsg(sm->tg);
 		//sc_merge_pending2complate_inbox(sm->sc);
 		sc_merge_box2complate_inbox(sm->sc, &sm->list_fifo);
 		sm->flag.merge = 0;	//还原
 		sm->rbroot_house_number = RB_ROOT;
 
+		char ctl = SORT_NEED_SORTING_INBOX;
+		sf_send_fn(ss, &ctl, 1);
+
+		//设置状态,等待被重置
+		sm->flag.tirgger_readable = ~0;
+
 		//合并之后向线程发起有数据到达的事件
 
 		//简陋的写
 		//如果可读事件尚未被唤醒, 或已经被重置
-		if (sm->flag.tirgger_readable == 0) {
-			char ctl = SORT_NEED_SORTING_INBOX;
-			//write(ss->fd, &ctl, sizeof(char));
-			rwbuf_append(&ss->wbuf, &ctl, 1);
-			sf_add_event(sm, ss, EV_WRITE);
-			//设置状态,等待被重置
-			sm->flag.tirgger_readable = ~0;
-		}
+		//if (sm->flag.tirgger_readable == 0) {
+		//	char ctl = SORT_NEED_SORTING_INBOX;
+		//	//write(ss->fd, &ctl, sizeof(char));
+		//	/*rwbuf_append(&ss->wbuf, &ctl, 1);
+		//	sf_add_event(sm, ss, EV_WRITE);*/
+
+		//	sf_send_fn(ss, &ctl, 1);
+
+		//	//设置状态,等待被重置
+		//	sm->flag.tirgger_readable = ~0;
+		//}
+		
 	}
 
 
 }
 
-//以下函数可以被其他模块导入
-uint32_t sf_send_fn(sock_session_t* ss, const char* data, uint32_t len) {
-	uint32_t enough, rt, old_wlen;
 
-	if (!data || !len)
-		return 0;
-
-	enough = rwbuf_enough(&ss->wbuf, len);
-	old_wlen = RWBUF_GET_LEN(&ss->wbuf);
-
-	if (RWBUF_GET_UNUSELEN(&ss->wbuf)) {
-		rt = rwbuf_append(&ss->wbuf, data, len);
-		if (rt)
-			sf_add_event(ss->sm, ss, EV_WRITE);
-		return rt;
-	}
-	else {
-		ss->wtry_number++;
-		if (4 <= ss->wtry_number) {
-			if (_SM_LIST_EMPTY(&ss->elem_servers))
-				sm_del_session(ss);
-			else {
-				if (ss->flag.comming)
-					sf_del_session(ss, 0);
-				else
-					sf_del_session(ss, 1);
-			}
-		}
-	}
-	return 0;
-}
-
-void sf_set_ready(sock_session_t* ss, uint8_t ready) {
-	if (ss) {
-		if (ready)
-			ss->flag.ready = ~0;
-		else
-			ss->flag.ready = 0;
-	}
-}
-
-uint8_t sf_get_ready(sock_session_t* ss) {
-	return ss->flag.ready;
-}
-
-rwbuf_t* sf_get_wbuf(sock_session_t* ss) {
-	return &ss->wbuf;
-}
-
-//以上可以被其他模块导入
 
 
 session_manager_t* sm_init_manager(uint32_t session_cache_size) {
@@ -1883,7 +1901,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 
 		//加载CA证书
 		if (err== 0 && tls.ca) {
-			SSL_CTX_set_verify(ctx, SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+			SSL_CTX_set_verify(ctx, SSL_VERIFY_FAIL_IF_NO_PEER_CERT | SSL_VERIFY_PEER, NULL);
 			if (rt = SSL_CTX_load_verify_locations(ctx, tls.ca, NULL) != 1)
 				err = SERROR_TLS_CA_ERR;
 		}
@@ -2096,11 +2114,103 @@ sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_
 		if (rt == -1)
 			break;
 
+		//_SM_LIST_ADD_TAIL(&ss->elem_servers, &sm->list_servers);
+		_SM_LIST_ADD_TAIL(&ss->elem_online, &sm->list_online);
+
+		if (behavior.conn_cb) {
+			{
+				messenger_t* msger = 0;
+				if (sf_search_and_insert_msger_with_ram(ss, 0, 0, THEME_CREATE, behavior.conn_cb, &msger) == SERROR_OK) {
+					cds_list_add_tail(&msger->elem_fifo, &ss->sm->list_fifo);
+					sf_set_flag_need_merge(ss->sm, 1);
+				}
+			}
+		}
+
+		return ss;
+
+	} while (0);
+
+
+	if (ss)
+		sf_free_session(sm, ss);
+
+	if (fd != -1)
+		close(fd);
+
+	return 0;
+}
+
+sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
+	uint8_t enable_tls, uint8_t enable_reconnect, session_behavior_t behavior, void* udata, uint8_t udata_len) {
+
+#if (!ENABLE_SSL)
+	if (enable_tls)
+		return 0;
+#endif
+
+	if (!sm)
+		return 0;
+
+	int fd, rt, ev = 0;
+	sock_session_t* ss = 0;
+	struct sockaddr_in sin;
+	char ip[32] = { 0 };
+
+	do {
+		rt = sf_domain2ip(domain, ip, sizeof(ip));
+		if (rt != SERROR_OK)
+			break;
+
+		fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
+		if (fd == -1)
+			break;
+
+		ss = sf_cache_session(sm);
+		if (!ss)
+			break;
+
+		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, sf_send_cb, behavior, udata, udata_len);
+		if (rt != SERROR_OK)
+			break;
+
+		sin.sin_family = AF_INET;
+		sin.sin_port = htons(port);
+		sin.sin_addr.s_addr = inet_addr(ip);
+
+		rt = connect(fd, &sin, sizeof(sin));
+		//if connect error
+		if (rt == -1 && errno != EINPROGRESS) {
+			////set need reconnect
+			//ss->flag.closed = ~0;
+			break;
+		}
+		else {
+			//add epoll status
+			rt = sf_add_event(sm, ss, EV_ET | EV_RECV);
+			if (rt != SERROR_OK)
+				break;
+		}
+
+		//If it is in ET mode and the connection fails, waiting reconnect
+		if (rt == -1)
+			break;
+
+#if (ENABLE_SSL)
+
+#endif//ENABLE_SSL
+
+
 		_SM_LIST_ADD_TAIL(&ss->elem_servers, &sm->list_servers);
 		return ss;
 
 	} while (0);
 
+#if (ENABLE_SSL)
+#else
+	if (enable_tls)
+		return 0;
+#endif//ENABLE_SSL
 
 	if (ss)
 		sf_free_session(sm, ss);
@@ -2210,8 +2320,14 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 }
 
 void sm_run(session_manager_t* sm) {
+	static uint8_t first = 1;
 	while (sm->flag.running) {
 		uint64_t waitms = ht_update_timer(sm->ht_timer);
+
+		if (first) {
+			waitms = 0;
+			first = 0;
+		}
 
 		if (_SM_LIST_EMPTY(&sm->list_pending_send) == 0 || _SM_LIST_EMPTY(&sm->list_pending_recv) == 0 || !cds_list_empty(&sm->list_outbox_fifo))
 			waitms = 0;

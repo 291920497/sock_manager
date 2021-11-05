@@ -4,6 +4,11 @@
 #include "../../sock_manager.h"
 #include "../../tools/rwbuf/rwbuf.h"
 
+typedef struct ws_header {
+	char url[256];
+	uint8_t opcode;
+}ws_header_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif//__cplusplus

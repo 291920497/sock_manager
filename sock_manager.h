@@ -77,7 +77,7 @@ typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t
 */
 typedef int32_t (*session_encode_fn)(const char* data, uint32_t len, rwbuf_t* out_buf);
 
-typedef void (*session_event_cb)(sortingcenter_ctx_t* scc, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, session_encode_fn encode_fn, void* udata, uint8_t udata_len, messenger_t* msger);
+typedef void (*session_event_cb)(sortingcenter_ctx_t* scc, uint32_t ev, int8_t* data, uint32_t len, uint32_t total_len, void* udata, uint8_t udata_len, messenger_t* msger);
 
 typedef struct session_behavior {
 	session_event_cb		conn_cb;		//创建连接回调
@@ -93,6 +93,8 @@ typedef struct tls_operate {
 	const char* cert;						//证书路径
 	const char* key;						//证书密钥路径
 }tls_operate_t;
+
+//typedef struct ws_
 
 //分拣中心需要的参数
 typedef struct sortingcenter_ctx {
@@ -124,6 +126,9 @@ sock_session_t* sm_add_client(session_manager_t* sm, int32_t fd, const char* ip,
 
 sock_session_t* sm_add_server(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
 	session_behavior_t behavior, void* udata, uint8_t udata_len);
+
+sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
+	uint8_t enable_tls, uint8_t enable_reconnect, session_behavior_t behavior, void* udata, uint8_t udata_len);
 
 uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval_ms, uint32_t delay_ms, int32_t repeat, sm_heap_timer_cb timer_cb, void* udata, uint8_t udata_len);
 

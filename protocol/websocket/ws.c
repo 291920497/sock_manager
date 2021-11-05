@@ -391,8 +391,9 @@ int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len
 
 
 int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset) {
-	uint32_t total = 0;
+	uint32_t total = 0, wbuf_size;
 	uint32_t len = mod->processed;
+	rwbuf_t* wbuf;
 
 	//如果已经完成握手
 	if (sf_get_ready(ss)) {
@@ -428,6 +429,10 @@ int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_deco
 			}
 			else {
 				mod->processed = len;
+				wbuf = sf_get_wbuf(ss);
+				wbuf_size = RWBUF_GET_SIZE(wbuf);
+				if (len >= wbuf_size)
+					return SERROR_WS_OVERFLOW;
 			}
 		}
 		else {
