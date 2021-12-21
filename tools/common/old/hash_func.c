@@ -1,6 +1,6 @@
 #include "hash_func.h"
 
-uint32_t hash_func(const char* char_key, int32_t klen) {
+uint32_t cf_hash_func(const char* char_key, int32_t klen) {
 	uint32_t hash = 0;
 	const unsigned char* key = (const unsigned char*)char_key;
 	const unsigned char* p;

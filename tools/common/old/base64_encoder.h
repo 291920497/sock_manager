@@ -9,7 +9,7 @@ extern "C"
 {
 #endif
 
-uint8_t* base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint32_t buf_len);
+uint8_t* cf_base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint32_t buf_len);
 
 #ifdef __cplusplus
 }

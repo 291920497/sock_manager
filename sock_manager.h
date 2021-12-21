@@ -24,8 +24,8 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
 	session_behavior_t* behavior, void* udata, uint8_t udata_len);
 
-sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
-	uint8_t is_reconnect, session_behavior_t* behavior, void* udata, uint8_t udata_len);
+sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len, uint8_t is_reconnect, 
+	session_behavior_t* behavior, void* udata, uint8_t udata_len);
 
 void sm_del_session(sock_session_t* ss);
 

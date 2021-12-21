@@ -6,6 +6,7 @@
 #define SERROR_INPARAM_ERR		(-2)	//入参错误
 #define SERROR_MEMALC_ERR		(-3)	//内存分配失败
 #define SERROR_PEER_DISCONN		(-4)	//对端已经断开连接, reset by peer
+#define SERROR_DECODE_ERR		(-5)	//解包错误
 
 //tls协议相关
 #define SERROR_TLS_MLC_ERR		(SERROR_MEMALC_ERR)	

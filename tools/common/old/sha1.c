@@ -241,7 +241,7 @@ static void sat_SHA1_Final(SHA1_CTX* context, uint8_t digest[SHA1_DIGEST_SIZE])
 	memset(finalcount, 0, 8);	/* SWR */
 }
 
-char* sz_sha1(uint8_t* buffer, int sz, char* out_buf) {
+char* cf_sha1(uint8_t* buffer, int sz, char* out_buf) {
 	//static uint8_t digest[SHA1_DIGEST_SIZE];
 	SHA1_CTX ctx;
 	sat_SHA1_Init(&ctx);

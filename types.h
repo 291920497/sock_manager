@@ -59,16 +59,13 @@ typedef enum {
 //sock_session 的状态机
 typedef struct session_flag {
 	int32_t		fin_peer : 1;				//是否连接已经关闭(客户端发起fin, 不允许读,但可以写)
-	int32_t		fin_local : 1;				//是否由本地发起fin/reset报文
+//	int32_t		fin_local : 1;				//是否由本地发起fin/reset报文
 
 	int32_t		comming : 1;				//是否有数据到来, 预防带数据的fin报文, 它也应该被处理
-	int32_t		last_shout : 1;				//如果fin由本地发起, 那么判断是否最后[一次]发送缓冲区内的数据
-//	int32_t		ready : 1;					//是否准备就绪,这将影响广播时是否将消息下发到这个session, 例如ws wss握手
-	//int32_t		readyed_handshake;			//准备就绪后
-	
+//	int32_t		last_shout : 1;				//如果fin由本地发起, 那么判断是否最后[一次]发送缓冲区内的数据
 
 	int32_t		is_connect;					//是否是客户端
-	int32_t		is_truncated;				//数据是否发生了截断(分包)
+//	int32_t		is_truncated;				//数据是否发生了截断(分包)
 
 	int32_t		ws : 1;						//是否为websocket协议
 	int32_t		ws_handshake : 1;			//websocket是否握手完成

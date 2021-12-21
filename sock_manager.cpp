@@ -22,7 +22,7 @@
 #include <errno.h>
 
 #include "types.hpp"
-#include "tools/common/base64_encoder.h"
+#include "tools/common/common_fn.h"
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -34,10 +34,46 @@
 #define _sm_realloc realloc
 #define _sm_free	free
 
-#define MAX_RECONN_SERVER_TIMEOUT 5
+#define MAX_RECONN_SERVER_TIMEOUT (5)
+#define MAX_HEART_TIMEOUT (20)
 
 static void sf_timer_reconn_cb(uint32_t timer_id, void* udata, uint8_t udata_len) {
+	static char errstr[256];
+	session_manager_t* sm = *((session_manager_t**)udata);
 
+	errstr[0] = 0;
+	int32_t eno;
+	sock_session_t* ss, * p;
+	cds_list_for_each_entry_safe(ss, p, &sm->list_reconnect, elem_lively) {
+		if (sf_reconnect(ss) == SERROR_OK) {
+			cds_list_del(&ss->elem_lively);
+			cds_list_add_tail(&ss->elem_lively, &sm->list_lively);
+		}
+		else {
+			eno = sf_errstr(errstr, sizeof(errstr));
+			printf("[%s] [%s:%d] [%s], Reconnection failed, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_SYSAPI_ERR, eno, errstr);
+		}
+	}
+}
+
+static void sf_timer_heart_timeout_cb(uint32_t timer_id, void* udata, uint8_t udata_len) {
+	session_manager_t* sm = *((session_manager_t**)udata);
+
+	uint64_t last = time(0);
+
+	sock_session_t* ss, * p;
+	cds_list_for_each_entry_safe(ss, p, &sm->list_lively, elem_lively) {
+		if ((last - ss->last_active) > MAX_HEART_TIMEOUT) {
+			if (0/*ping_fn*/) {
+				if (0/*is_ping*/) {
+					sm_del_session(ss);
+				}
+				else {
+					/*call ping_fn*/;
+				}
+			}
+		}
+	}
 }
 
 static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port, uint32_t send_len, session_rw recv_cb, session_rw send_cb, session_behavior_t* uevent, void* udata, uint16_t udata_len) {
@@ -189,7 +225,7 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		socklen_t s_len = sizeof(c_sin);
 		memset(&c_sin, 0, sizeof(c_sin));
 
-		static char errstr[512];
+		static char errstr[256];
 		int32_t c_fd, try_count = 1, serr = 0, errcode = 0;
 		//c_fd = sf_try_accept(ss->fd, (struct sock_addr*)&c_sin, &s_len);
 		c_fd = sf_try_accept(ss->fd, (sockaddr*)&c_sin, &s_len);
@@ -296,11 +332,13 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 	int8_t* data;
 	sock_session_t* ss, * n;
 	rwbuf_t* rbuf;
+	uint64_t last = time(0);
 
 	cds_list_for_each_entry_safe(ss, n, &sm->list_changed, elem_changed) {
 		rbuf = &ss->rbuf;
 
 		do {
+			rt = 0;
 			opt = 0;
 			front_offset = 0;
 			back_offset = 0;
@@ -314,12 +352,13 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					if (rt == 0)
 						break;
 					else if (rt < 0) {
+						printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_DECODE_ERR, rt, "");
 						sm_del_session(ss);
 						//这里可以打印错误
 						break;
 					}
 
-					if (rwbuf_aband_front(rbuf, rt) != SERROR_OK) {
+					if (rwbuf_aband_front(rbuf, rt) != SERROR_OK) {						
 						sm_del_session(ss);
 						//这里可以打印错误
 						break;
@@ -327,8 +366,8 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 
 					//若需要处理的数据大于1
 					if (frame = (rt - front_offset - back_offset)) {
-						//回调一次
-
+						//update time
+						ss->last_active = last;
 #if (BETA_CODE)
 						rwbuf_t beta_buf;
 						rwbuf_init(&beta_buf);
@@ -339,6 +378,8 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 						if (ss->uevent.complate_cb) {
 							ss->uevent.complate_cb(ss, 0, &beta_buf, ss->udata, ss->udatalen);
 						}
+
+						
 
 						//rwbuf_t beta_buf;
 						//rwbuf_init(&beta_buf);
@@ -517,6 +558,7 @@ void sm_exit_manager(session_manager_t* sm) {
 	}
 
 	cds_list_for_each_entry_safe(pos, n, &sm->list_reconnect, elem_lively) {
+		pos->flag.reconnect = 0;
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
@@ -573,7 +615,8 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
-	int rt, err, fd, ev, optval = 1;
+	char buf[256];
+	int rt, eno, fd, ev, optval = 1;
 
 	if (!sm) return 0;
 
@@ -585,11 +628,11 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	sin.sin_port = htons(port);
 	sin.sin_addr.s_addr = INADDR_ANY;
 
-	rt = bind(fd, (const struct sockaddr*)&sin, sizeof(sin));
+	rt = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
 	if (rt == -1)
 		goto clean;
 
-	rt = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
+	rt = bind(fd, (const struct sockaddr*)&sin, sizeof(sin));
 	if (rt == -1)
 		goto clean;
 
@@ -617,6 +660,10 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	return ss;
 
 clean:
+
+	eno = sf_errstr(buf, sizeof(buf));
+	printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, "0.0.0.0", port, SERROR_SYSAPI_ERR, eno, buf);
+
 	if (fd != -1)
 #ifndef _WIN32
 		close(fd);
@@ -667,17 +714,19 @@ clean:
 	return 0;
 }
 
-sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len,
-	uint8_t is_reconnect, session_behavior_t* behavior, void* udata, uint8_t udata_len) {
+;
+sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len, uint8_t is_reconnect, 
+	session_behavior_t* behavior, void* udata, uint8_t udata_len) {
 
 	if (!sm)
 		return 0;
 
-	int fd, rt, err, ev = 0;
+	int fd, rt, eno, ev = 0;
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
+	char buf[256];
 	char ip[32] = { 0 };
-
+	
 	do {
 		rt = sf_domain2ip(domain, ip, sizeof(ip));
 		if (rt != SERROR_OK)
@@ -740,6 +789,8 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 
 	} while (0);
 
+	eno = sf_errstr(buf, sizeof(buf));
+	printf("[%s] [%s:%d] [%s], Connection failed, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, domain, port, SERROR_SYSAPI_ERR, eno, buf);
 
 	if (ss)
 		sf_free_session(sm, ss);
@@ -759,17 +810,8 @@ void sm_del_session(sock_session_t* ss) {
 	//统一操作, 但不包括服务器列表
 	//sf_del_session(ss, 1);
 
+	ss->flag.fin_peer = ~0;
 	sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
-
-#if(ENABLE_SSL)
-	if (ss->flag.tls) {
-		if (ss->tls_info.ctx)
-			SSL_CTX_free((SSL_CTX*)(ss->tls_info.ctx));
-
-		if (ss->tls_info.ssl)
-			SSL_free((SSL*)(ss->tls_info.ssl));
-	}
-#endif//ENABLE_SSL
 
 	//从未决队列中移除
 	if (cds_list_empty(&ss->elem_pending_recv) == 0)
@@ -788,30 +830,36 @@ void sm_del_session(sock_session_t* ss) {
 		if (cds_list_empty(&ss->elem_changed) == 0)
 			cds_list_del_init(&ss->elem_changed);
 	}
-	
-
-	
-	/*if (ss->flag.comming == 0) {
-		if (cds_list_empty(&ss->elem_online) == 0) {
-			cds_list_del_init(&ss->elem_online);
-		}
-	}*/
 
 	if (cds_list_empty(&ss->elem_lively) == 0) {
 		cds_list_del_init(&ss->elem_lively);
 	}
-
-	//if(ss->flag.comming)
 
 	/*if (ss->flag.reconnect == 0) {
 		if (cds_list_empty(&ss->elem_servers) == 0)
 			cds_list_del_init(&ss->elem_servers);
 	}*/
 
-	ss->flag.fin_peer = ~0;
+#if(ENABLE_SSL)
+	if (ss->flag.tls) {
+		if (ss->tls_info.ssl) {
+			SSL_free((SSL*)(ss->tls_info.ssl));
+			ss->tls_info.ssl = 0;
+		}
+		
+		if (ss->tls_info.ctx && ss->flag.reconnect == 0)
+			SSL_CTX_free((SSL_CTX*)(ss->tls_info.ctx));
+	}
+#endif//ENABLE_SSL
 
-	//加入到离线队列
-	cds_list_add_tail(&ss->elem_offline, &ss->sm->list_offline);
+	if (ss->flag.reconnect == 0) {
+		//加入到离线队列
+		cds_list_add_tail(&ss->elem_offline, &ss->sm->list_offline);
+	}
+	else {
+		//加入重新连接的队列
+		cds_list_add_tail(&ss->elem_lively, &ss->sm->list_reconnect);
+	}
 }
 
 int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int)) {
@@ -872,6 +920,8 @@ int32_t sm_tls_enable(sock_session_t* ss, tls_opt_t* tls_opt, _OUT char* errstr)
 	if (!ctx)
 		err = SERROR_TLS_MLC_ERR;
 	else {
+		SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv3);
+		SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
 		SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1);
 		//openssl 1.0.2 enable
 		SSL_CTX_set_default_verify_paths(ctx);
@@ -968,7 +1018,7 @@ int32_t sm_ws_client_upgrade(sock_session_t* ss, const char* domain) {
 		key[i] = rand() & 0xff;
 	}
 
-	base64_encode_r(key, 30, b64, sizeof(b64));
+	cf_base64_encode_r(key, 30, b64, sizeof(b64));
 
 	char* cut = (char*)strchr(domain, ':');
 	if (cut) {

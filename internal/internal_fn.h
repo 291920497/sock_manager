@@ -15,6 +15,7 @@
 #include "../types.hpp"
 
 #ifndef _WIN32
+#include <unistd.h>
 #include <uuid/uuid.h>
 #else
 #include <objbase.h>
@@ -67,6 +68,20 @@ static const char* sf_timefmt() {
 	return time_fmt;
 }
 #endif//_WIN32
+
+static int32_t sf_errstr(char* errbuf, uint32_t errbuf_len) {
+	int32_t eno;
+#ifndef _WIN32
+	eno = errno;
+	if (errbuf)
+		strncpy(errbuf, strerror(eno), errbuf_len);
+#else
+	eno = GetLastError();
+	if (errbuf)
+		FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), errbuf, errbuf_len, NULL);
+#endif//_WIN32
+	return eno;
+}
 
 //添加监听事件
 static int32_t sf_add_event(session_manager_t* sm, sock_session_t* ss, int32_t ev) {
@@ -313,12 +328,16 @@ static uint32_t sf_uncoded_send_fn(sock_session_t* ss, const char* data, uint32_
 //}
 
 static void sf_recv_cb(sock_session_t* ss) {
+	static char buf[256];
 	if (ss->flag.fin_peer)
 		return;
 
-	int32_t rt, eno;
+	buf[0] = 0;
+	int32_t rt, eno, buflen;
+	
+
 	do {
-		int32_t buflen = rwbuf_unused_len(&(ss->rbuf));
+		buflen = rwbuf_unused_len(&(ss->rbuf));
 
 #if TEST_CODE
 		//如果已经没有额外可用的buffer
@@ -326,20 +345,21 @@ static void sf_recv_cb(sock_session_t* ss) {
 			printf("rwbuf->len = 0\n");
 
 			//加入未决队列中, 理论上, 这里是不会执行到的.(在当前线程读写正常的前提下)
-			if (_SM_LIST_EMPTY(&ss->elem_pending_recv))
-				_SM_LIST_ADD_TAIL(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
+			if (cds_list_empty(&ss->elem_pending_recv))
+				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
 			return;
 		}
 #endif
 
 		int rd = recv(ss->fd, (char*)rwbuf_start_ptr(&(ss->rbuf)) + rwbuf_len(&(ss->rbuf)), buflen, 0);
 		if (rd == -1) {
+			eno = sf_errstr(buf, sizeof(buf));
 #ifndef _WIN32
-			eno = errno;
+			//eno = errno;
 			//If there is no data readability
 			if (eno == EAGAIN) {
 #else
-			eno = GetLastError();
+			//eno = GetLastError();
 			if (eno == WSAEWOULDBLOCK) {
 #endif//_WIN32
 				//if in the recv pending
@@ -399,13 +419,16 @@ static void sf_recv_cb(sock_session_t* ss) {
 		return;
 	} while (0);
 
-	if (rt == SERROR_SYSAPI_ERR)
-		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
+	if (rt != SERROR_PEER_DISCONN)
+		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, eno, buf);
 
-#ifdef TEST_CODE
-	else if (rt == SERROR_PEER_DISCONN)
-		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-#endif
+//	if (rt == SERROR_SYSAPI_ERR) {
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_SYSAPI_ERR, eno, buf);
+//	}
+//#ifdef TEST_CODE
+//	else if (rt == SERROR_PEER_DISCONN)
+//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+//#endif
 
 	//如果是服务器则暂不回收, 等待重连
 	sm_del_session(ss);
@@ -413,24 +436,27 @@ static void sf_recv_cb(sock_session_t* ss) {
 
 static void sf_send_cb(sock_session_t* ss) {
 	//如果已经完全关闭, 可能存在半连接,那么剩余的数据也应该尝试发送, 所以这个状态一定要严谨
+	static char buf[256];
 	if (ss->flag.fin_peer)
 		return;
 
-	//uint32_t len = RWBUF_GET_LEN(&ss->wbuf);
-	int32_t rt, eno;
+	buf[0] = 0;
+	int32_t rt, eno, snd_len;
+
 	do {
-		uint32_t snd_len = rwbuf_len(&ss->wbuf);
+		snd_len = rwbuf_len(&ss->wbuf);
 		if (!snd_len)
 			return;
 
 		int32_t sd = send(ss->fd, (char*)rwbuf_start_ptr(&ss->wbuf), snd_len, 0);
 		if (sd == -1) {
+			eno = sf_errstr(buf, sizeof(buf));
 #ifndef _WIN32
 			//If the interrupt or the kernel buffer is temporarily full
-			eno = errno;
+//			eno = errno;
 			if (eno == EAGAIN || eno == EINTR) {
 #else
-			eno = GetLastError();
+			//			eno = GetLastError();
 			if (eno == WSAEWOULDBLOCK) {
 #endif//_WIN32
 				if (cds_list_empty(&ss->elem_pending_send))
@@ -480,14 +506,18 @@ static void sf_send_cb(sock_session_t* ss) {
 		return;
 	} while (0);
 
+	if (rt != SERROR_PEER_DISCONN)
+		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, eno, buf);
 
-	if (rt == SERROR_SYSAPI_ERR)
-		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
-	else if (rt == SERROR_PEER_DISCONN) {
-#ifdef TEST_CODE
-		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-#endif//TEST_CODE
-	}
+//	if (rt == SERROR_SYSAPI_ERR) {
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_SYSAPI_ERR, eno, buf);
+//	}
+//		//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, eno, buf);
+//	else if (rt == SERROR_PEER_DISCONN) {
+//#ifdef TEST_CODE
+//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+//#endif//TEST_CODE
+//	}
 
 	//sm_del_session(ss);
 	//如果是服务器则暂不回收, 等待重连
@@ -556,12 +586,14 @@ static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, _OUT int32_t* err
 			serr = SERROR_PEER_DISCONN;
 			return serr;
 		}
+
+		eno = sf_errstr(errstr, 256);
 #ifndef _WIN32
-		eno = errno;
+//		eno = errno;
 		//If there is no data readability
 		if (eno == EAGAIN) {
 #else
-		eno = GetLastError();
+//		eno = GetLastError();
 		if (eno == WSAEWOULDBLOCK) {
 #endif//_WIN32
 			//if in the recv pending
@@ -622,14 +654,15 @@ static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, _OUT int32_t* err
 }
 
 static void sf_tls_recv_cb(sock_session_t* ss) {
+	static char errstr[256];
 	if (ss->flag.fin_peer)
 		return;
 
 #if (ENABLE_SSL)
+	errstr[0] = 0;
 	int32_t err, rd, errcode = 0, serr = 0;
 	SSL* ssl = (SSL*)(ss->tls_info.ssl);
-	static char errstr[512];
-	errstr[0] = 0;
+	
 
 	//是否正在重新协商
 	//if (ss->flag.tls_rwantw) {
@@ -702,74 +735,30 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 				return;
 
 			break;
-
-			////如果握手完成
-			//if (ss->flag.is_connect) {
-			//	//if ((rd = SSL_connect(ssl)) == 1 && X509_V_OK == SSL_get_verify_result(ssl)) {
-			//	if ((rd = SSL_connect(ssl)) == 1) {
-			//		/*X509* cert = SSL_get_peer_certificate(ssl);
-			//		X509_NAME* name = X509_get_subject_name(cert);
-			//		X509_free(cert);*/
-
-			//		/*X509* cert = SSL_get_peer_certificate(ssl);
-			//		if (cert != NULL) {
-			//			X509_print_fp(stdout, cert);
-			//			X509_free(cert);
-			//		}
-			//		else {
-			//			printf("no peer certificate available\n");
-			//		}*/
-
-			//		if ((rt = SSL_get_verify_result(ssl)) == X509_V_OK) {
-			//			ss->flag.tls_handshake = ~0;
-			//			return;
-			//		}
-			//		else {
-			//			serr = SERROR_TLS_X509_ERR;
-			//			strcpy(errstr, X509_verify_cert_error_string(serr));
-			//			break;
-			//		}
-			//	}
-			//}
-			//else {
-			//	if ((rd = SSL_accept(ssl)) == 1) {
-			//		if ((rt = SSL_get_verify_result(ssl)) == X509_V_OK) {
-			//			ss->flag.tls_handshake = ~0;
-			//			return;
-			//		}
-			//		else {
-			//			serr = SERROR_TLS_X509_ERR;
-			//			strcpy(errstr, X509_verify_cert_error_string(serr));
-			//			break;
-			//		}
-			//	}
-			//}
-			//
-
-			//serr = sf_tls_read_err(ss, rd, &rt, &opensslerr, errstr);
-			////预期内的错误
-			//if (serr == SERROR_OK)
-			//	return;
-
-			//break;
 		}
 	} while (0);
 
-	switch (serr) {
-	case SERROR_SYSAPI_ERR:
-		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
-		break;
-	case SERROR_PEER_DISCONN:
-#ifdef TEST_CODE
-		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-#endif//TEST_CODE
-		break;
-		//以下都是SSL的错误了
-	default:
-		SSL_shutdown(ssl);
-		//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, "Active shutdown");
+
+	if (serr != SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-	}
+	SSL_shutdown(ssl);
+
+//	switch (serr) {
+//	case SERROR_SYSAPI_ERR:
+//		//printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
+//		break;
+//	case SERROR_PEER_DISCONN:
+//#ifdef TEST_CODE
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+//#endif//TEST_CODE
+//		break;
+//		//以下都是SSL的错误了
+//	default:
+//		SSL_shutdown(ssl);
+//		//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, "Active shutdown");
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
+//	}
 
 	sm_del_session(ss);
 
@@ -828,12 +817,13 @@ static int32_t sf_tls_send_err(sock_session_t* ss, int32_t sd, _OUT int32_t* err
 			return serr;
 		}
 		
+		eno = sf_errstr(errstr, 256);
 #ifndef _WIN32
-		eno = errno;
+//		eno = errno;
 		//If there is no data readability
 		if (eno == EAGAIN) {
 #else
-		eno = GetLastError();
+//		eno = GetLastError();
 		if (eno == WSAEWOULDBLOCK) {
 #endif//_WIN32
 			//if in the recv pending
@@ -980,7 +970,7 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 #if (ENABLE_SSL)
 	int32_t snd_len, sd, errcode = 0, serr = 0, err = 0;
 	SSL* ssl = (SSL*)ss->tls_info.ssl;
-	static char errstr[512];
+	static char errstr[256];
 	errstr[0] = 0;
 	
 	do {
@@ -1058,62 +1048,27 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 				return;
 
 			break;
-
-			////如果握手完成
-			//if (ss->flag.is_connect) {
-			//	if ((sd = SSL_connect(ssl)) == 1) {
-			//		if ((rt = SSL_get_verify_result(ssl)) == X509_V_OK) {
-			//			ss->flag.tls_handshake = ~0;
-			//			return;
-			//		}
-			//		else {
-			//			serr = SERROR_TLS_X509_ERR;
-			//			break;
-			//		}
-			//	}
-			//}
-			//else {
-			//	if ((sd = SSL_accept(ssl)) == 1) {
-			//		if ((rt = SSL_get_verify_result(ssl)) == X509_V_OK) {
-			//			ss->flag.tls_handshake = ~0;
-			//			return;
-			//		}
-			//		else {
-			//			serr = SERROR_TLS_X509_ERR;
-			//			break;
-			//		}
-			//	}
-			//}
-
-			//serr = sf_tls_read_err(ss, sd, &rt, &opensslerr, errstr);
-			////预期内的错误
-			//if (serr == SERROR_OK) {
-			//	if (!RWBUF_GET_LEN(&ss->wbuf)) {
-			//		//移除可写事件
-			//		sf_del_event(ss->sm, ss, EV_WRITE);
-			//	}
-			//	return;
-			//}
-
-			//break;
 		}
 			
 	} while (0);
 
-	switch (serr) {
-	case SERROR_SYSAPI_ERR:
-		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
-		break;
-	case SERROR_PEER_DISCONN:
-#ifdef TEST_CODE
-		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-#endif//TEST_CODE
-		break;
-		//以下都是SSL的错误了
-	default:
-		SSL_shutdown(ssl);
-		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-}
+	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
+	SSL_shutdown(ssl);
+
+//	switch (serr) {
+//	case SERROR_SYSAPI_ERR:
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
+//		break;
+//	case SERROR_PEER_DISCONN:
+//#ifdef TEST_CODE
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
+//#endif//TEST_CODE
+//		break;
+//		//以下都是SSL的错误了
+//	default:
+//		SSL_shutdown(ssl);
+//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
+//	}
 
 	sm_del_session(ss);
 
@@ -1130,7 +1085,10 @@ static int32_t sf_tls_enable_from_ctx(sock_session_t* ss, void* tls_ctx, _OUT in
 	if (!ctx)
 		return SERROR_INPARAM_ERR;
 
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv3);
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
 	SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1);
+
 	ssl = SSL_new(ctx);
 
 	if (err == 0 && !ssl)
@@ -1187,6 +1145,86 @@ static int32_t sf_tls_enable_from_ctx(sock_session_t* ss, void* tls_ctx, _OUT in
 #else
 	return SERROR_TLS_NOENABLE;
 #endif//ENABLE_SSL
+}
+
+static int32_t sf_reconnect(sock_session_t* ss) {
+	struct sockaddr_in sin;
+	int32_t rt, ret, ev = 0;
+
+	if (ss->fd != -1) {
+#ifndef _WIN32
+		rt = close(ss->fd);
+#else
+		//closecok
+		rt = closesocket(ss->fd);
+#endif//_WIN32
+
+		if (rt != 0)
+			return SERROR_SYSAPI_ERR;
+
+		ss->fd = -1;
+	}
+	
+	ss->fd = sf_try_socket(AF_INET, SOCK_STREAM, 0);
+	if (ss->fd == -1)
+		return SERROR_SYSAPI_ERR;
+
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(ss->port);
+	sin.sin_addr.s_addr = inet_addr(ss->ip);
+
+	nofile_set_nonblocking(ss->fd);
+
+	rt = connect(ss->fd, (const struct sockaddr*)&sin, sizeof(sin));
+#ifndef _WIN32
+	if (rt == -1 && errno != EINPROGRESS) {
+#else
+	if (rt == -1 && GetLastError() != WSAEWOULDBLOCK) {
+#endif//_WIN32
+		return SERROR_SYSAPI_ERR;
+	}
+
+#if(ENABLE_SSL)
+	//tls
+	if (ss->flag.tls) {
+		SSL* ssl = SSL_new((SSL_CTX*)ss->tls_info.ctx);
+		if (!ssl)
+			return SERROR_SYSAPI_ERR;
+
+		SSL_set_fd(ssl, ss->fd);
+		SSL_set_connect_state(ssl);
+		ss->tls_info.ssl = ssl;
+
+		//client hello
+		ev |= EV_WRITE;
+	}
+#endif//ENABLE_SSL
+	
+	//add epoll status
+	ev |= (EV_ET | EV_RECV);
+	rt = sf_add_event(ss->sm, ss, ev);
+	if (rt != SERROR_OK) {
+#if(ENABLE_SSL)
+		if (ss->flag.tls && ss->tls_info.ssl) {
+			SSL_free((SSL*)ss->tls_info.ssl);
+			ss->tls_info.ssl = 0;
+		}
+#endif//ENABLE_SSL
+		return SERROR_SYSAPI_ERR;
+	}
+	
+
+	//clear flag
+	ss->flag.fin_peer = 0;
+	ss->flag.comming = 0;
+	ss->flag.ws_handshake = 0;
+	ss->flag.tls_handshake = 0;
+
+	rwbuf_clear(&ss->rbuf);
+	rwbuf_clear(&ss->wbuf);
+	ss->last_active = time(0);
+
+	return SERROR_OK;
 }
 
 #ifdef __cplusplus

@@ -134,19 +134,3 @@ void rwbuf_clear(rwbuf_t* rwb) {
 		rwb->len = 0;
 	}
 }
-
-int8_t* rwbuf_start_ptr(const rwbuf_t* ptr) {
-	return ((ptr)->buf + (ptr)->offset);
-}
-
-uint32_t rwbuf_unused_len(const rwbuf_t* ptr) {
-	return ((ptr)->size - (ptr)->offset - (ptr)->len);
-}
-
-uint32_t rwbuf_len(const rwbuf_t* ptr) {
-	return ((ptr)->len);
-}
-
-uint32_t rwbuf_capcity(const rwbuf_t* ptr) {
-	return ((ptr)->size);
-}

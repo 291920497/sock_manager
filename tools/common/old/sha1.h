@@ -8,7 +8,7 @@ extern "C"
 {
 #endif
 
-char* sz_sha1(uint8_t* buffer, int sz, char* out_buf);
+char* cf_sha1(uint8_t* buffer, int sz, char* out_buf);
 
 #ifdef __cplusplus
 }

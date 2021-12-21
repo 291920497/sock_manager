@@ -3,20 +3,10 @@
 #include "../../types.hpp"
 #include "../../internal/internal_fn.h"
 
-#include "../../tools/common/sha1.h"
-#include "../../tools/common/base64_encoder.h"
-
 #include "../../serror.h"
-#include "../../tools/common/hash_func.h"
-
+#include "../../tools/common/common_fn.h"
 
 #define RFC6455 "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-//函数的实现在sock_manager.c, 但是不方便暴露出来
-//extern uint32_t sf_send_fn(sock_session_t* ss, const char* data, uint32_t len);
-//extern void sf_set_ws_handshake(sock_session_t* ss, uint8_t ready);
-//extern uint8_t sf_get_ws_handshake(sock_session_t* ss);
-//extern rwbuf_t* sf_get_wbuf(sock_session_t* ss);
 
 struct ws_frame_protocol {
 	char fin;
@@ -104,6 +94,7 @@ static void sf_ws_encode_protocol(char* frame, struct ws_frame_protocol* in_buf)
 
 	if (in_buf->mask) {
 		memcpy(encode, in_buf->mask_code, sizeof(char) * 4);
+		encode += 4;
 	}
 	in_buf->head_len = encode - frame;
 }
@@ -124,9 +115,11 @@ static int sf_ws_merge_protocol(struct ws_frame_protocol* in_prev_buf, struct ws
 		new_head_len += 4;
 	}
 
+	//将当前帧数据拷贝到上一帧的数据末尾
 	memmove(in_prev_buf->data + in_prev_buf->payload_len, in_cur_buf->data, in_cur_buf->payload_len);
 	in_prev_buf->payload_len += (in_cur_buf->payload_len);
 
+	//如果协议头变长, 数据向后移动
 	if (new_head_len > in_prev_buf->head_len) {
 		memmove(in_prev_buf->data + new_head_len - in_prev_buf->head_len, in_prev_buf->data, in_prev_buf->payload_len);
 	}
@@ -150,8 +143,8 @@ static int sf_ws_handshake(sock_session_t* ss, const char* url, const char* host
 
 	strcpy(sec_ws_key, sec_key);
 	strcat(sec_ws_key, RFC6455);
-	sz_sha1((uint8_t*)sec_ws_key, strlen(sec_ws_key), sha1);
-	base64_encode_r((uint8_t*)sha1, 20, (uint8_t*)b64, sizeof(b64));
+	cf_sha1((uint8_t*)sec_ws_key, strlen(sec_ws_key), sha1);
+	cf_base64_encode_r((uint8_t*)sha1, 20, (uint8_t*)b64, sizeof(b64));
 
 	sprintf(handshake, "HTTP/1.1 101 Switching Protocols\r\n" \
 		"Upgrade: websocket\r\n" \
@@ -231,7 +224,7 @@ int32_t sf_ws_parse_head(sock_session_t* ss, char* data, unsigned short len) {
 		//printf("key: [%s], var: [%s]\n", key, var);
 		total += (fe_ptr - data - total + sizeof(char) * 2);
 
-		key_hash = hash_func(key, -1);
+		key_hash = cf_hash_func(key, -1);
 		switch (key_hash) {
 		case 0x3B2793A8://Upgrade
 			if (strcmp(var, "websocket"))
@@ -276,7 +269,7 @@ handshake_failed:
 	return 0;
 }
 
-int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset) {
+static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset, uint32_t* back_offset, uint8_t isck_msk) {
 	if ((data_len - mod->processed) < 2) {
 		mod->lenght_tirgger = mod->processed + 2;
 		return 0;
@@ -285,21 +278,22 @@ int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len
 	struct ws_frame_protocol wfp;
 	memset(&wfp, 0, sizeof(wfp));
 
-	rwbuf_t* wbuf = 0;
-	uint32_t wbuf_size;
-	uint32_t fin_opcode = *(data + mod->processed);
-	uint32_t msk_paylen = *(data + mod->processed + 1);
+	uint32_t total;
+	uint8_t fin_opcode = *(data + mod->processed);
+	uint8_t msk_paylen = *(data + mod->processed + 1);
 	wfp.fin = fin_opcode & 0x80;
 	wfp.mask = msk_paylen & 0x80;
 	wfp.opcode = fin_opcode & 0x7F;
 	wfp.payload_len = msk_paylen & 0x7F;
-	wfp.head_len = 6;	//头2字节 + 至少4字节的掩码
+	wfp.head_len = 2 + (isck_msk ? 4 : 0);	//头2字节 + mask4
 
 	if (wfp.opcode == 0x08)
 		return SERROR_WS_FIN;
 
-	if (!(wfp.mask))
-		return SERROR_WS_NO_MASK;
+	if (isck_msk) {
+		if (!(wfp.mask))
+			return SERROR_WS_NO_MASK;
+	}
 
 	//查看报文头是否需要增大
 	if (wfp.payload_len == 126)
@@ -328,54 +322,63 @@ int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len
 		wfp.payload_len = ntohl(*((uint32_t*)(data + 2)));
 	}
 
-	//此处对一个完整帧的长度做出判断
-
-	//wbuf = sf_get_wbuf(ss);
-	wbuf = &ss->wbuf;
-	wbuf_size = rwbuf_capcity(wbuf);
-	if ((wfp.payload_len + wfp.head_len) > wbuf_size)
+	//判断当前缓冲器是否能容纳一个整包
+	if ((wfp.payload_len + wfp.head_len) > rwbuf_capcity(&ss->rbuf))
 		return SERROR_WS_OVERFLOW;
 
-	//如果包并不完整
+	//收到的数据长度不满足一个数据包, 修改触发器且继续等待
 	if ((wfp.head_len + wfp.payload_len) > (data_len - mod->processed)) {
 		mod->lenght_tirgger = mod->processed + wfp.head_len + wfp.payload_len;
 		return 0;
 	}
 
-	memcpy(wfp.mask_code, data + mod->processed + wfp.head_len - 4, 4);
-	sf_ws_decode_data(wfp.mask_code, wfp.data, wfp.payload_len);
+	//处理掩码, 如果是心跳包则跳过
+	if (isck_msk && wfp.payload_len) {
+		memcpy(wfp.mask_code, data + mod->processed + wfp.head_len - 4, 4);
+		sf_ws_decode_data(wfp.mask_code, wfp.data, wfp.payload_len);
+	}
 
-	//到这里缓冲区已经满足一个整包,但是此时需要判断, 是否为最后一帧
+	//收到完整的数据包, 判断当前是否为结束报文
 	if (wfp.fin) {
 		struct ws_frame_protocol twfp, * pwfp;
 		pwfp = &twfp;
 
-		//如果是需要合并后再处理的
+		//总长 = 已处理的长度(包含因合并数据包产生的不再使用的长度) + 当前数据包长度
+		total = mod->processed + wfp.head_len + wfp.payload_len;
+
+		//若存在等待被合并的数据包, 则合并且计算出
 		if (mod->processed) {
-			//第一帧只能在头部
+			//上一帧数据必须在首地址. 解码上一帧的报文
 			sf_ws_decode_protocol(data, pwfp);
+			//合并数据, 注意: 合并动作, 将第二帧的数据拷贝到第一帧的数据末尾, 但是将空出第一帧的报文头长度
 			sf_ws_merge_protocol(pwfp, &wfp, wfp.fin);
+
+			//两帧使用总缓冲区长度 - 合并后完整一帧的长度, 后续的内存则需要移除
+			*back_offset = total - (pwfp->head_len + pwfp->payload_len);
 		}
 		else
 			pwfp = &wfp;
 		
 
-		switch (pwfp->opcode) {
+		switch (pwfp->opcode & 0x0f) {
 		case 0x01:
 		case 0x02:
 		{
-			//解码
-			
-
+			//offset front len
 			*offset = pwfp->head_len;
-			mod->lenght_tirgger = 6;	//等待下一个包头+掩码
-			mod->processed = 0;			//清理索引
-			return pwfp->payload_len + pwfp->head_len;
-			break;
+
+			mod->lenght_tirgger = 2 + (isck_msk ? 4 : 0);	//等待下一个包头+掩码
+			mod->processed = 0;	
+
+			//aband total
+			return total;
 		}
 		case 0x0A:
 		{
-			//是否回应心跳包
+			//收到pong
+			break;
+		}
+		case 0x09: {
 			break;
 		}
 			
@@ -386,14 +389,20 @@ int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len
 		if (mod->processed) {
 			struct ws_frame_protocol prev_wfp;
 			sf_ws_decode_protocol(data, &prev_wfp);
-			sf_ws_merge_protocol(&prev_wfp, &wfp, wfp.fin);
 
-			mod->processed = prev_wfp.head_len + prev_wfp.payload_len;
-			mod->lenght_tirgger = mod->processed + 6;	//下一次触发的时机是头+掩码到达的时候
+			//真实处理的长度为前后两帧占用缓冲区长度
+			mod->processed = mod->processed + wfp.head_len + wfp.payload_len;
+
+			//合并了两帧数据, 且后一帧数据拼接到前一帧的数据末尾, 且修正前一帧数据的协议头
+			sf_ws_merge_protocol(&prev_wfp, &wfp, wfp.fin);
+			
+			mod->lenght_tirgger = mod->processed + 2 + (isck_msk ? 4 : 0);
 		}
 		else {
 			//等待下一个包头+掩码的到达
-			mod->lenght_tirgger = wfp.head_len + wfp.payload_len + 6;
+			mod->lenght_tirgger = wfp.head_len + wfp.payload_len + 2 + (isck_msk ? 4 : 0);
+			//更新已处理的字节数
+			mod->processed = wfp.head_len + wfp.payload_len;
 		}
 	}
 	
@@ -401,27 +410,19 @@ int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len
 	return 0;
 }
 
-
-
-
 int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset) {
-	uint32_t total = 0, wbuf_size;
+	uint32_t total = 0, capcity;
 	uint32_t len = mod->processed;
-	rwbuf_t* wbuf;
 
 
 	//如果已经完成握手
-	//if (sf_get_ws_handshake(ss)) {
 	if (ss->flag.ws_handshake) {
-		return sf_ws_parse_frame(ss, data, data_len, mod, front_offset);
+		return sf_ws_parse_frame(ss, data, data_len, mod, front_offset, back_offset, ss->flag.is_connect ? 0 : 1);
 	}
 	else {
 		if (data_len > 4) {
 			while ((total + len) < data_len - 3) {
 				if (*((int*)(data + total + len)) == 0x0A0D0A0D) {
-					//printf("begin handshake\n");
-					//sf_ws_parse_head(ss, data + total, len + 4);
-					//printf("end handshake\n");
 					total += (len + 4);
 					len = 0;
 					break;
@@ -440,22 +441,22 @@ int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_deco
 						return SERROR_WS_HANDSHAKE_ERR;
 				}
 
-				//下一帧数据满足2字节
-				mod->lenght_tirgger = 2;
+				ss->flag.ws_handshake = ~0;
+
+				//下一帧数据满足2字节 + 根据本端是否是客户端, 判断是否追加掩码长度
+				mod->lenght_tirgger = 2 + (ss->flag.is_connect ? 0 : 4);
 				mod->processed = 0;
 
 				//偏移当前头的长度, 外部消息为0则不需要发送
 				*front_offset = total;
 				//删除total长度的数据
-				printf("%s:%d ws handshake done\n", ss->ip, ss->port);
+				//printf("%s:%d ws handshake done\n", ss->ip, ss->port);
 				return total;
 			}
 			else {
 				mod->processed = len;
-				//wbuf = sf_get_wbuf(ss);
-				wbuf = &ss->wbuf;
-				wbuf_size = rwbuf_capcity(wbuf);
-				if (len >= wbuf_size)
+				capcity = rwbuf_capcity(&ss->rbuf);
+				if (len >= rwbuf_capcity(&ss->rbuf))
 					return SERROR_WS_OVERFLOW;
 			}
 		}
@@ -468,7 +469,7 @@ int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_deco
 	return 0;
 }
 
-int32_t ws_encode_fn(const char* data, uint32_t data_len, rwbuf_t* out_buf) {
+int32_t ws_svr_encode_fn(const char* data, uint32_t data_len, rwbuf_t* out_buf) {
 	uint32_t head_len = 0, rt, total;
 	if (data_len < 126) 
 		head_len += 2;
@@ -508,4 +509,145 @@ int32_t ws_encode_fn(const char* data, uint32_t data_len, rwbuf_t* out_buf) {
 	rwbuf_append(out_buf, data, data_len);
 #endif
 	return SERROR_OK;
+}
+
+static int32_t sf_encode_pingpoing_frame(rwbuf_t* out_buf, uint8_t is_ping, uint8_t hs_mask) {
+	int32_t rt;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.opcode = is_ping ? 0x09 : 0x0A;
+	wfp.mask = hs_mask ? 1 : 0;
+	if (wfp.mask) {
+		for (int i = 0; i < 4; ++i) {
+			wfp.mask_code[i] = rand() & 255;
+		}
+	}
+
+	char ws_head[32];
+	sf_ws_encode_protocol(ws_head, &wfp);
+
+	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
+	if (rt < 0)
+		return rt;
+
+	return SERROR_OK;
+}
+
+int32_t ws_svr_ping_fn(rwbuf_t* out_buf) {
+	return sf_encode_pingpoing_frame(out_buf, 1, 0);
+	/*int32_t rt;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.opcode = 0x09;
+
+	char ws_head[16];
+	sf_ws_encode_protocol(ws_head, &wfp);
+
+	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
+	if (rt < 0)
+		return rt;
+
+	return SERROR_OK;*/
+}
+
+int32_t ws_svr_pong_fn(rwbuf_t* out_buf) {
+	return sf_encode_pingpoing_frame(out_buf, 0, 0);
+	/*int32_t rt;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.opcode = 0x0A;
+
+	char ws_head[16];
+	sf_ws_encode_protocol(ws_head, &wfp);
+
+	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
+	if (rt < 0)
+		return rt;
+
+	return SERROR_OK;*/
+}
+
+int32_t ws_clt_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf) {
+	uint32_t head_len = 0, rt, total;
+	if (len < 126)
+		head_len += 2;
+	else if (len < 0xFFFF)
+		head_len += 4;
+	else
+		head_len += 6;
+
+	char ws_head[16], * msk_data;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.mask = 1;
+	wfp.payload_len = len;
+	wfp.opcode = 0x01;
+	for (int i = 0; i < 4; ++i) {
+		wfp.mask_code[i] = rand() & 255;
+	}
+
+	sf_ws_encode_protocol(ws_head, &wfp);
+	
+	total = wfp.head_len + wfp.payload_len;
+	if (!rwbuf_enough(out_buf, total)) {
+		rt = rwbuf_relc(out_buf, rwbuf_capcity(out_buf) + total);
+		if (rt != SERROR_OK)
+			return rt;
+	}
+
+	msk_data = (char*)rwbuf_start_ptr(out_buf) + rwbuf_len(out_buf);
+	rwbuf_append(out_buf, ws_head, wfp.head_len);
+
+	//data address
+	rwbuf_append(out_buf, data, wfp.payload_len);
+	sf_ws_decode_data(wfp.mask_code, msk_data + wfp.head_len, wfp.payload_len);
+	return SERROR_OK;
+}
+
+int32_t ws_clt_ping_fn(rwbuf_t* out_buf) {
+	return sf_encode_pingpoing_frame(out_buf, 1, 0);
+	/*int32_t rt;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.opcode = 0x09;
+	wfp.mask = 1;
+	for (int i = 0; i < 4; ++i) {
+		wfp.mask_code[i] = rand() & 255;
+	}
+
+	char ws_head[16];
+	sf_ws_encode_protocol(ws_head, &wfp);
+
+	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
+	if (rt < 0)
+		return rt;
+
+	return SERROR_OK;*/
+}
+
+int32_t ws_clt_pong_fn(rwbuf_t* out_buf) {
+	return sf_encode_pingpoing_frame(out_buf, 1, 0);
+	/*int32_t rt;
+	struct ws_frame_protocol wfp;
+	memset(&wfp, 0, sizeof(wfp));
+	wfp.fin = 1;
+	wfp.opcode = 0x0A;
+	wfp.mask = 1;
+	for (int i = 0; i < 4; ++i) {
+		wfp.mask_code[i] = rand() & 255;
+	}
+
+	char ws_head[16];
+	sf_ws_encode_protocol(ws_head, &wfp);
+
+	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
+	if (rt < 0)
+		return rt;
+
+	return SERROR_OK;*/
 }

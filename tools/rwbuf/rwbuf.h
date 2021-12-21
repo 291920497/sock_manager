@@ -17,12 +17,6 @@ extern "C" {
 //#define RWBUF_GET_LEN(ptr) ((ptr)->len)
 //#define RWBUF_GET_SIZE(ptr) ((ptr)->size)
 
-//#define rwbuf_start_ptr(ptr) ((ptr)->buf + (ptr)->offset)
-//#define rwbuf_unused_len(ptr) ((ptr)->size - (ptr)->offset - (ptr)->len)
-//#define rwbuf_len(ptr) ((ptr)->len)
-//#define rwbuf_capcity(ptr) ((ptr)->size)
-//#define RWBUF_ADD_LEN
-
 typedef struct rwbuf {
 	uint32_t offset;		
 	uint32_t len;		//data len
@@ -52,19 +46,25 @@ void rwbuf_swap(rwbuf_t* l, rwbuf_t* r);
 
 void rwbuf_clear(rwbuf_t* rwb);
 
-int8_t* rwbuf_start_ptr(const rwbuf_t* rwb);
+static inline
+int8_t* rwbuf_start_ptr(const rwbuf_t* rwb) {
+	return ((rwb)->buf + (rwb)->offset);
+}
 
-uint32_t rwbuf_unused_len(const rwbuf_t* rwb);
+static inline
+uint32_t rwbuf_unused_len(const rwbuf_t* rwb) {
+	return ((rwb)->size - (rwb)->offset - (rwb)->len);
+}
 
-uint32_t rwbuf_len(const rwbuf_t* rwb);
+static inline
+uint32_t rwbuf_len(const rwbuf_t* rwb) {
+	return ((rwb)->len);
+}
 
-uint32_t rwbuf_capcity(const rwbuf_t* rwb);
-
-//int8_t* rwbuf_initial_address(rwbuf_t* rwb);
-
-//uint32_t rwbuf_unused_length(rwbuf_t* rwb);
-
-//uint32_t rwbuf_get_len(rwbuf_t* rwb);
+static inline
+uint32_t rwbuf_capcity(const rwbuf_t* rwb) {
+	return ((rwb)->size);
+}
 
 #ifdef __cplusplus
 }

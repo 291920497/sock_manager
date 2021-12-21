@@ -9,7 +9,7 @@ extern "C" {
 #endif//__cplusplus
 ;
 
-uint32_t hash_func(const char* char_key, int32_t klen);
+uint32_t cf_hash_func(const char* char_key, int32_t klen);
 
 #ifdef __cplusplus
 }

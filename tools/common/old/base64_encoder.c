@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-uint8_t* base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint32_t buf_len) {
+uint8_t* cf_base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint32_t buf_len) {
 	static const char* encoding = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	uint32_t encode_sz = (len + 2) / 3 * 4;
 	if (encode_sz >= buf_len)
