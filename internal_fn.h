@@ -8,11 +8,11 @@
 #include <time.h>
 #include <errno.h>
 
-#include "../sock_manager.h"
-#include "../tools/common/nofile_ctl.h"
+#include "sock_manager.h"
+#include "tools/common/nofile_ctl.h"
 
 //types
-#include "../types.hpp"
+#include "types.hpp"
 
 #ifndef _WIN32
 #include <unistd.h>

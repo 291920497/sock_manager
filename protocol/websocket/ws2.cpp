@@ -1,7 +1,7 @@
 #include "ws.h"
 
 #include "../../types.hpp"
-#include "../../internal/internal_fn.h"
+#include "../../internal_fn.h"
 
 #include "../../serror.h"
 #include "../../tools/common/common_fn.h"
@@ -323,7 +323,7 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 	}
 
 	//判断当前缓冲器是否能容纳一个整包
-	if ((wfp.payload_len + wfp.head_len) > rwbuf_capcity(&ss->rbuf))
+	if ((mod->processed + wfp.payload_len + wfp.head_len) > rwbuf_capcity(&ss->rbuf))
 		return SERROR_WS_OVERFLOW;
 
 	//收到的数据长度不满足一个数据包, 修改触发器且继续等待
