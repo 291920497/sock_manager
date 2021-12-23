@@ -79,7 +79,7 @@ void ht_destroy_heap_timer(heap_timer_t* ht);
 	-1 failed;
 	other timer_id;
 */
-uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, uint32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len);
+uint32_t ht_add_timer(heap_timer_t* ht, uint32_t interval, int32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len);
 
 void ht_del_timer(heap_timer_t* ht, uint32_t timer_id);
 

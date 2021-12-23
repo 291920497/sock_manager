@@ -1,6 +1,6 @@
 //#include "../inc/types.h"
 #include "sock_manager.h"
-#include "internal/internal_fn.h"
+#include "internal_fn.h"
 
 //std
 #include <stdio.h>
@@ -76,13 +76,12 @@ static void sf_timer_heart_timeout_cb(uint32_t timer_id, void* udata, uint8_t ud
 	}
 }
 
-static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port, uint32_t send_len, session_rw recv_cb, session_rw send_cb, session_behavior_t* uevent, void* udata, uint16_t udata_len) {
-	int rt;
-
-	if (!ss || !sm || udata_len > MAX_USERDATA_LEN)
+static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port, uint32_t send_len, session_rw recv_cb, session_rw send_cb, session_behavior_t* uevent, void* udata/*, uint16_t udata_len*/) {
+	if (!ss || !sm/* || udata_len > MAX_USERDATA_LEN*/)
 		return SERROR_INPARAM_ERR;
 
 	//memset(ss, 0, sizeof(sock_session_t));
+	int rt;
 	ss->fd = fd;
 	ss->epoll_state = 0;
 	ss->sm = sm;
@@ -91,13 +90,15 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->send_cb = send_cb;
 	ss->last_active = time(0);
 	ss->uuid_hash = sf_uuidhash();
+	ss->udata = udata;
 	memcpy(&ss->uevent, uevent, sizeof(session_behavior_t));
 	strcpy(ss->ip, ip);
 
 	nofile_set_nonblocking(fd);
 
-	if (udata && udata_len)
-		memcpy(&ss->udata, &udata, udata_len);
+	/*if (udata && udata_len)
+		memcpy(&ss->udata, &udata, udata_len);*/
+	
 
 	if (send_len) {
 		rt = rwbuf_relc(&ss->wbuf, send_len);
@@ -247,7 +248,8 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		const char* ip = inet_ntoa(c_sin.sin_addr);
 		unsigned short port = ntohs(c_sin.sin_port);
 		//printf("fd: %d\n", c_fd);
-		sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, ss->wbuf.size, &ss->uevent, ss->udata, ss->udatalen);
+		//sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, ss->wbuf.size, &ss->uevent, ss->udata, ss->udatalen);
+		sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, ss->wbuf.size, &ss->uevent, ss->udata/*, ss->udatalen*/);
 		if (!css) {
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
@@ -352,6 +354,14 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 					if (rt == 0)
 						break;
 					else if (rt < 0) {
+						//if (rt == SERROR_PONG || rt == SERROR_PING) {
+						//	ss->last_active = last;
+						//	if (rt == SERROR_PING) {
+						//		//回pong, 应该加入统一的回复列表中
+						//	}
+						//	break;
+						//}
+
 						printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_DECODE_ERR, rt, "");
 						sm_del_session(ss);
 						//这里可以打印错误
@@ -366,8 +376,6 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 
 					//若需要处理的数据大于1
 					if (frame = (rt - front_offset - back_offset)) {
-						//update time
-						ss->last_active = last;
 #if (BETA_CODE)
 						rwbuf_t beta_buf;
 						rwbuf_init(&beta_buf);
@@ -376,24 +384,13 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 						beta_buf.buf = data + front_offset;
 
 						if (ss->uevent.complate_cb) {
-							ss->uevent.complate_cb(ss, 0, &beta_buf, ss->udata, ss->udatalen);
+							ss->uevent.complate_cb(ss, 0, (const char*)(data + front_offset), frame, ss->udata);
 						}
-
-						
-
-						//rwbuf_t beta_buf;
-						//rwbuf_init(&beta_buf);
-						//rwbuf_mlc(&beta_buf, frame);
-						//rwbuf_append(&beta_buf, data + front_offset, frame);
-						//
-						////回调
-						//if (ss->uevent.complate_cb) {
-						//	ss->uevent.complate_cb(ss, 0, &beta_buf, ss->udata, ss->udatalen);
-						//}
-				
-						//rwbuf_free(&beta_buf);
 #endif//BETA_CODE
 					}
+
+					//update time
+					ss->last_active = last;
 				}
 			}
 		} while ((len - rt) >= ss->decode_mod.lenght_tirgger && ss->decode_mod.lenght_tirgger != 0/*这是怕解包函数啥也不做导致死循环*/);
@@ -509,7 +506,7 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	SSL_load_error_strings();
 #endif//ENABLE_SSL
 	
-	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, 0, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
+	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, -(MAX_RECONN_SERVER_TIMEOUT * 1000) + 500, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 	return sm;
 
 
@@ -611,7 +608,7 @@ void sm_set_running(session_manager_t* sm, uint8_t run) {
 }
 
 sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
-	session_behavior_t* accepted_behav, void* udata, uint8_t udata_len) {
+	session_behavior_t* accepted_behav, void* udata/*, uint8_t udata_len*/) {
 
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
@@ -644,7 +641,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	if (ss == 0)
 		goto clean;
 
-	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb, NULL/*accpet_function*/, accepted_behav, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb, NULL/*accpet_function*/, accepted_behav, udata/*, udata_len*/);
 	if (rt != SERROR_OK)
 		goto clean;
 
@@ -677,7 +674,7 @@ clean:
 }
 
 sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
-	session_behavior_t* behavior, void* udata, uint8_t udata_len) {
+	session_behavior_t* behavior, void* udata/*, uint8_t udata_len*/) {
 
 	if (!sm || fd < 0)
 		return 0;
@@ -687,7 +684,7 @@ sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* i
 	if (!ss)
 		return 0;
 
-	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*sf_recv_cb*/, sf_send_cb, behavior, udata, udata_len);
+	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*sf_recv_cb*/, sf_send_cb, behavior, udata/*, udata_len*/);
 	if (rt != SERROR_OK)
 		goto clean;
 
@@ -716,7 +713,7 @@ clean:
 
 ;
 sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len, uint8_t is_reconnect, 
-	session_behavior_t* behavior, void* udata, uint8_t udata_len) {
+	session_behavior_t* behavior, void* udata/*, uint8_t udata_len*/) {
 
 	if (!sm)
 		return 0;
@@ -740,7 +737,7 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 		if (!ss)
 			break;
 
-		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, sf_send_cb, behavior, udata, udata_len);
+		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, sf_send_cb, behavior, udata/*, udata_len*/);
 		if (rt != SERROR_OK)
 			break;
 
@@ -876,7 +873,7 @@ int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int)) {
 #endif//_WIN32
 }
 
-uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval, uint32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len) {
+uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval, int32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len) {
 	return ht_add_timer(sm->ht_timer, interval, delay_ms, repeat, on_timeout, udata, udata_len);
 }
 
@@ -1014,6 +1011,7 @@ int32_t sm_ws_client_upgrade(sock_session_t* ss, const char* domain) {
 	unsigned char b64[64];
 	uint32_t fmt_len = 0;
 
+	srand(time(0));
 	for (int i = 0; i < 30; ++i) {
 		key[i] = rand() & 0xff;
 	}
@@ -1152,14 +1150,8 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 }
 
 void sm_run(session_manager_t* sm) {
-	static uint8_t first = 1;
 	while (sm->flag.running) {
 		uint64_t waitms = ht_update_timer(sm->ht_timer);
-
-		if (first) {
-			waitms = 0;
-			first = 0;
-		}
 
 		if (cds_list_empty(&sm->list_pending_send) == 0 || cds_list_empty(&sm->list_pending_recv) == 0 || !cds_list_empty(&sm->list_outbox_fifo))
 			waitms = 0;

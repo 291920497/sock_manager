@@ -26,9 +26,9 @@ typedef struct sock_session {
 	uint8_t		rtry_number;	//尝试读的次数
 	uint8_t		wtry_number;	//尝试写的次数
 
-	uint8_t		udatalen;		//用户数据长度
-	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
-//	void*		udata;
+//	uint8_t		udatalen;		//用户数据长度
+//	uint8_t		udata[MAX_USERDATA_LEN];		//用户数据, 用户自定义
+	void*		udata;
 
 	uint64_t	last_active;	//最后一次活跃的时间
 	tls_info_t	tls_info;		//tls协议上下文

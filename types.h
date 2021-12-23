@@ -159,7 +159,7 @@ typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t
 
 #else
 //typedef void(*session_event_cb)(sock_session_t*, uint32_t ev, rwbuf_t* buf, void* udata, uint8_t udata_len);
-typedef void(*session_event_cb)(sock_session_t*, uint32_t ev, rwbuf_t* buf, void* udata, uint8_t udata_len);
+typedef void(*session_event_cb)(sock_session_t*, uint32_t ev, const char* data, uint32_t len, void* udata);
 #endif//SM_NOT_SIGNEL_THREAD
 
 

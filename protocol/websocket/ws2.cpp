@@ -126,6 +126,7 @@ static int sf_ws_merge_protocol(struct ws_frame_protocol* in_prev_buf, struct ws
 
 	if (is_fin) {
 		in_prev_buf->fin |= 0x80;
+		in_prev_buf->opcode = in_cur_buf->opcode;
 	}
 
 	in_prev_buf->head_len = new_head_len;
@@ -338,6 +339,25 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 		sf_ws_decode_data(wfp.mask_code, wfp.data, wfp.payload_len);
 	}
 
+	//如果是PING或者PONG包, 
+	if (wfp.fin && (wfp.opcode == 0x0A || wfp.opcode == 0x09)) {
+		//if ping
+		if (wfp.opcode == 0x09) {
+			//调用pong函数
+		}
+
+		//|data|ping/pong|data
+		if (mod->processed) {
+			mod->processed += wfp.head_len;
+			return 0;
+		}
+
+		//|ping/pong|data
+		*offset = wfp.head_len;
+		*back_offset = 0;
+		return wfp.head_len;
+	}
+
 	//收到完整的数据包, 判断当前是否为结束报文
 	if (wfp.fin) {
 		struct ws_frame_protocol twfp, * pwfp;
@@ -360,7 +380,7 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 			pwfp = &wfp;
 		
 
-		switch (pwfp->opcode & 0x0f) {
+		switch (pwfp->opcode) {
 		case 0x01:
 		case 0x02:
 		{
