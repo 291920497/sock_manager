@@ -22,7 +22,7 @@
 #define SERROR_TLS_X509_ERR		(-109)	//证书校验错误, 错误码参照x509_vfy.h:99 文档http://doc.ecoscentric.com/ref/openssl-apps-verify.html#openssl-verify
 
 //通信协议通用
-#define SERROR_DECODE_ERR		(-200)	//协议解析错误
+#define SERROR_DECODE_ERR		(-200)	//协议解析类错误
 //#define SERROR_PING				(-201)	//ping包
 //#define SERROR_PONG				(-202)	//ping包
 

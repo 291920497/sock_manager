@@ -262,8 +262,8 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		}
 		else {
 			//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
-			static uint32_t count = 0;
-			printf("accept: %d\n", ++count);
+			/*static uint32_t count = 0;
+			printf("accept: %d\n", ++count);*/
 		}
 
 		if (ss->flag.tls) {
@@ -496,8 +496,6 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 #else
 	FD_ZERO(&sm->rfdst);
 	FD_ZERO(&sm->wfdst);
-	WSADATA data;
-	WSAStartup(MAKEWORD(2, 2), &data);
 #endif//_WIN32
 
 #if(ENABLE_SSL)
@@ -523,7 +521,7 @@ clean:
 	if (sm->ep_fd != -1)
 		close(sm->ep_fd);
 #else
-	WSACleanup();
+
 #endif//_WIN32
 		
 
