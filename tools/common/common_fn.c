@@ -1,8 +1,19 @@
 #include "common_fn.h"
 
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
+
+#ifdef _WIN32
+#include <WinSock2.h>
+#include <ws2def.h>
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#endif//_WIN32
+
 
 typedef struct {
 	uint32_t state[5];
@@ -209,6 +220,61 @@ uint8_t* cf_base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint3
 	return out_buf;
 }
 
+
+#ifdef _WIN32
+static int32_t cf_socketpair_win32(int type, int protocol, int fd[2]) {
+	int rt, addrlen = sizeof(struct sockaddr_in);
+	SOCKET fd0, fd1, fdListen;
+	fdListen = fd0 = fd1 = INVALID_SOCKET;
+
+	struct sockaddr_in sin_1, sin_0;
+	memset(&sin_0, 0, sizeof(sin_0));
+	memset(&sin_1, 0, sizeof(sin_1));
+
+	//WSA_FLAG_NO_HANDLE_INHERIT
+	//fdListen = WSASocket(AF_INET,type,protocol,)
+	fd0 = socket(AF_INET, type, protocol);
+	fd1 = socket(AF_INET, type, protocol);
+	fdListen = socket(AF_INET, type, protocol);
+
+	//bind
+	sin_1.sin_family = AF_INET;
+	sin_1.sin_addr.s_addr = htonl(INADDR_LOOPBACK);	//127.0.0.1 环回接口
+	sin_1.sin_port = 0;
+
+	rt = bind(fdListen, (struct sockaddr*)&sin_1, sizeof(sin_1));
+	if (rt == SOCKET_ERROR) goto clean;
+
+	rt = listen(fdListen, 1);
+	if (rt == SOCKET_ERROR) goto clean;
+
+	//fd0 connect
+	rt = getsockname(fdListen, (struct sockaddr*)&sin_1, &addrlen);
+	if (rt == SOCKET_ERROR) goto clean;
+
+	rt = connect(fd0, (struct  sockaddr*)&sin_1, addrlen);
+	if (rt == SOCKET_ERROR) goto clean;
+
+	//accept fd0
+	fd1 = accept(fdListen, (struct sockaddr*)&sin_0, &addrlen);
+	if (rt == SOCKET_ERROR) goto clean;
+
+	rt = closesocket(fdListen);
+	if (rt == SOCKET_ERROR) goto clean;
+
+	fd[0] = fd0;	//c->s
+	fd[1] = fd1;	//s->c
+
+	return 0;
+clean:
+	if (fd0 != INVALID_SOCKET) closesocket(fd0);
+	if (fd1 != INVALID_SOCKET) closesocket(fd1);
+	if (fdListen != INVALID_SOCKET) closesocket(fdListen);
+	return SOCKET_ERROR;
+}
+#endif//_WIN32
+
+
 uint32_t cf_hash_func(const char* char_key, int32_t klen) {
 	uint32_t hash = 0;
 	const unsigned char* key = (const unsigned char*)char_key;
@@ -230,3 +296,23 @@ uint32_t cf_hash_func(const char* char_key, int32_t klen) {
 
 	return hash;
 }
+
+int32_t cf_closesocket(int32_t fd) {
+#ifndef _WIN32
+	return close(fd);
+#else
+	return closesocket(fd);
+#endif//_WIN32
+}
+
+int32_t cf_socketpair(int __domain, int __type, int __protocol, int __fds[2]) {
+#ifndef _WIN32
+	return socketpair(__domain, __type, __protocol, __fds);
+#else
+	if (__domain != AF_INET) 
+		return -1;
+
+	return cf_socketpair_win32(__type, __protocol, __fds);
+#endif//_WIN32
+}
+

@@ -5,10 +5,14 @@
 
 #ifndef _WIN32
 #include "tools/stl/list.h"
+#include <pthread.h>
 #else
+#include <Windows.h>
 #include "tools/stl/wlist.h"
 #endif//_WIN32
+
 #include "tools/stl/rbtree.h"
+#include "tools/common/spin_lock.h"
 
 typedef struct sock_session {
 	int32_t		fd;
@@ -43,9 +47,6 @@ typedef struct sock_session {
 
 	cds_list_head_t	elem_lively;
 	cds_list_head_t	elem_offline;
-#ifdef _WIN32
-	//cds_list_head_t	elem_forgotten;			//win32下select模型中被遗忘的套接字
-#endif
 	cds_list_head_t	elem_listens;
 	cds_list_head_t elem_changed;			//有改变的session, 用于在读缓冲区发生改变时加入该列表
 	cds_list_head_t	elem_pending_recv;
@@ -73,16 +74,16 @@ typedef struct session_manager {
 	cds_list_head_t list_pending_recv;
 	cds_list_head_t list_pending_send;
 	cds_list_head_t list_session_cache;
-#ifdef _WIN32
-	//cds_list_head_t	list_forgotten;			//win32下select模型中被遗忘的套接字
-#endif//WIN32
 
-	cds_list_head_t list_fifo;		//排队的信使
-	cds_list_head_t list_outbox_fifo;	//等待放入发件箱的信使
-	rb_root_t rbroot_house_number;	//门牌号列表
-
-	sock_session_t* pipe0;
-	//	sorting_center_t* sc;			//分拣中心
+#if (SM_MULTI_THREAD)
+	int32_t			fdpipe[2];
+	cds_list_head_t list_rcvbuf;			//接收到的事件, entry类型为external_buf_vehicle_t
+	cds_list_head_t list_sndbuf;			//等待发送的数据列表, entry类型为external_buf_vehicle_t
+	osspin_lk_t		lk_sndbuf;				//待发送数据列表的自旋锁
+	session_dispatch_data_cb dispath_data_cb;	//派发数据包的回调函数
+	rb_root_t		rb_tidy;				//用于整理数据包
+	cds_list_head_t list_tidy;				//整理后的待发送数据包链表
+#endif//SM_MULTI_THREAD
 }session_manager_t;
 
 #endif//_TYPES_HPP_

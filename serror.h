@@ -6,6 +6,7 @@
 #define SERROR_INPARAM_ERR		(-2)	//入参错误
 #define SERROR_MEMALC_ERR		(-3)	//内存分配失败
 #define SERROR_PEER_DISCONN		(-4)	//对端已经断开连接, reset by peer
+#define SERROR_DECLARE_PIPE_ERR	(-5)	//windows下目前只支持AF_INET
 
 
 //tls协议相关

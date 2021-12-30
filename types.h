@@ -50,11 +50,24 @@
 #define _IN 
 #define _OUT 
 
+#define _sm_malloc malloc
+#define _sm_realloc realloc
+#define _sm_free	free
+
 typedef enum {
 	EV_ET = NUM_ET,
 	EV_RECV = NUM_IN,
 	EV_WRITE = NUM_OUT
-}sm_event_t;
+}sm_event_e;
+
+typedef enum{
+	SM_PACKET_TYPE_NONE = 0,
+	SM_PACKET_TYPE_CREATE,
+	SM_PACKET_TYPE_DESTORY,
+	SM_PACKET_TYPE_DATA,
+	SM_PACKET_TYPE_PING,
+	SM_PACKET_TYPE_PONG,
+}sm_enum_packet_type;
 
 //sock_session 的状态机
 typedef struct session_flag {
@@ -65,7 +78,6 @@ typedef struct session_flag {
 //	int32_t		last_shout : 1;				//如果fin由本地发起, 那么判断是否最后[一次]发送缓冲区内的数据
 
 	int32_t		is_connect;					//是否是客户端
-//	int32_t		is_truncated;				//数据是否发生了截断(分包)
 
 	int32_t		ws : 1;						//是否为websocket协议
 	int32_t		ws_handshake : 1;			//websocket是否握手完成
@@ -81,8 +93,6 @@ typedef struct session_flag {
 //session manager的状态机
 typedef struct manager_flag {
 	char running : 1;
-	char merge : 1;							//是否应该合并
-	char readable : 1;						//信箱是否可读
 }manager_flag_t;
 
 /*
@@ -123,9 +133,10 @@ typedef struct session_manager session_manager_t;
 typedef struct cds_list_head cds_list_head_t;
 typedef struct rb_root rb_root_t;
 typedef struct rb_node rb_node_t;
+typedef struct session_behavior session_behavior_t;
+
 
 typedef void (*session_rw)(sock_session_t*);
-
 typedef void(*sm_heap_timer_cb)(uint32_t, void*, uint8_t);
 
 
@@ -147,29 +158,28 @@ typedef int32_t(*session_encode_fn)(const char* data, uint32_t len, rwbuf_t* out
 *	data, 接收到的数据起始地址
 *	len, data的长度
 *	mod, 解包模块, 说明参照rcv_decode_mod_t
+*	data_type, 对应返回sm_enum_packet_type, 当然也可以自定义
 *	return value
 *		val < 0: 指示任意错误, 将由内部移除当前session
 *		val = 0: 内部将什么也不做, 但是依然可以通过输出mod内的参数修改解包回调的行为
 *		val > 0: 表示解包函数得到一个完整的数据包, 数据包的长度即为返回值 (这里需要注意的是, 这个返回值是包括包头的(因为大多数情况都有包头))
 *	offset, 最后说明这个输出参数, 当返回值 > 0的时候使用, 用于除去包头的长度, 表示真正的数据起始位置需要函数返回值偏移offset
 */
-typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset);
+typedef int32_t(*session_decode_pkg_cb)(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* data_type);
 
-#if (SM_NOT_SIGNEL_THREAD)
-
+#if (SM_MULTI_THREAD)
+typedef struct external_buf_vehicle external_buf_vehicle_t;
+typedef void (*session_dispatch_data_cb)(session_manager_t* sm, cds_list_head_t* list_vehicle);
+typedef void (*session_event_cb)(sock_session_t* ss, uint32_t hash, uint32_t pkg_type, uint32_t total, const char* data, uint32_t len, void* udata, session_behavior_t* behav, external_buf_vehicle_t* ebv);
 #else
-//typedef void(*session_event_cb)(sock_session_t*, uint32_t ev, rwbuf_t* buf, void* udata, uint8_t udata_len);
-typedef void(*session_event_cb)(sock_session_t*, uint32_t ev, const char* data, uint32_t len, void* udata);
+typedef void(*session_event_cb)(sock_session_t* ss, uint32_t hash, uint32_t pkg_type, const char* data, uint32_t len, void* udata);
 #endif//SM_NOT_SIGNEL_THREAD
 
 
-
 typedef struct session_behavior {
-	//	session_event_cb		conn_cb;		//创建连接回调
-	//	session_event_cb		disconn_cb;		//断开连接回调
 	session_decode_pkg_cb	decode_cb;		//用户自定义解包协议
 	session_encode_fn		encode_fn;		//用户自定义封包协议
-	session_event_cb	complate_cb;		//解包成功回调
+	session_event_cb		complete_cb;	//解包成功回调
 }session_behavior_t;
 
 #endif//_TYPES_H_

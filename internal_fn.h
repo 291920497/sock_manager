@@ -10,6 +10,7 @@
 
 #include "sock_manager.h"
 #include "tools/common/nofile_ctl.h"
+#include "tools/common/common_fn.h"
 
 //types
 #include "types.hpp"
@@ -17,6 +18,7 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <uuid/uuid.h>
+#include <sys/socket.h>
 #else
 #include <objbase.h>
 #endif//_WIN32
@@ -308,24 +310,6 @@ static uint32_t sf_uncoded_send_fn(sock_session_t* ss, const char* data, uint32_
 
 	return 0;
 }
-
-////uint32_t sf_send_fn(sock_session_t* ss, const char* data, uint32_t len);
-//static void sf_set_ws_handshake(sock_session_t* ss, uint8_t is_done) {
-//	if (is_done) {
-//		ss->flag.ws_handshake = ~0;
-//	}
-//	else {
-//		ss->flag.ws_handshake = 0;
-//	}
-//}
-//
-//static uint8_t sf_get_ws_handshake(sock_session_t* ss) {
-//	return ss->flag.ws_handshake;
-//}
-//
-//static rwbuf_t* sf_get_wbuf(sock_session_t* ss) {
-//	return &ss->wbuf;
-//}
 
 static void sf_recv_cb(sock_session_t* ss) {
 	static char buf[256];
@@ -1152,12 +1136,13 @@ static int32_t sf_reconnect(sock_session_t* ss) {
 	int32_t rt, ret, ev = 0;
 
 	if (ss->fd != -1) {
-#ifndef _WIN32
-		rt = close(ss->fd);
-#else
-		//closecok
-		rt = closesocket(ss->fd);
-#endif//_WIN32
+		rt = cf_closesocket(ss->fd);
+//#ifndef _WIN32
+//		rt = close(ss->fd);
+//#else
+//		//closecok
+//		rt = closesocket(ss->fd);
+//#endif//_WIN32
 
 		if (rt != 0)
 			return SERROR_SYSAPI_ERR;

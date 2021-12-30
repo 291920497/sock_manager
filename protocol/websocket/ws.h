@@ -15,7 +15,7 @@ extern "C" {
 ;
 //void web_protocol_recv(sock_session_t* ss);
 
-int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset);
+int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type);
 
 int32_t ws_svr_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf);
 

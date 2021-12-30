@@ -11,7 +11,7 @@
 #define BINARY_MAX_SEND 8192
 #define BINARY_MAX_RECV 16384
 
-int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset) {
+int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
 	int type_length = sizeof(TBINARY_LENGTH_TYPE);
 
 	//长度标志不完整
@@ -23,6 +23,8 @@ int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_d
 		printf("binary decode pkg_len: [%d]\n", pkg_len);
 		return -1;
 	}
+
+	//需要判断是否是心跳包
 
 	//如果这能满足一个完整的包, 那么需要告知库, 下一次回调的时机,这是必须的,否则将按照默认的, 有数据即回调
 	if (len >= (pkg_len + type_length)) {
@@ -48,6 +50,7 @@ int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_d
 			mod->lenght_tirgger = type_length;
 		}
 
+		*pkg_type = SM_PACKET_TYPE_DATA;
 		return pkg_len + type_length;
 	}
 

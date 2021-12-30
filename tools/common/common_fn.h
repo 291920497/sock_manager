@@ -19,6 +19,10 @@ uint8_t* cf_base64_encode_r(uint8_t* data, uint32_t len, uint8_t* out_buf, uint3
 
 uint32_t cf_hash_func(const char* char_key, int32_t klen);
 
+int32_t cf_closesocket(int32_t fd);
+
+int32_t cf_socketpair(int __domain, int __type, int __protocol, int __fds[2]);
+
 #ifdef __cplusplus
 }
 #endif

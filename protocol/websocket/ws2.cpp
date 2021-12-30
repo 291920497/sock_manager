@@ -270,7 +270,7 @@ handshake_failed:
 	return 0;
 }
 
-static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset, uint32_t* back_offset, uint8_t isck_msk) {
+static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset, uint32_t* back_offset, uint32_t* pkg_type, uint8_t isck_msk) {
 	if ((data_len - mod->processed) < 2) {
 		mod->lenght_tirgger = mod->processed + 2;
 		return 0;
@@ -342,9 +342,14 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 	//如果是PING或者PONG包, 
 	if (wfp.fin && (wfp.opcode == 0x0A || wfp.opcode == 0x09)) {
 		//if ping
-		if (wfp.opcode == 0x09) {
-			//调用pong函数
-		}
+		//if (wfp.opcode == 0x09) {
+		//	//调用pong函数
+		//}
+
+		if (wfp.opcode == 0x09)
+			*pkg_type = SM_PACKET_TYPE_PING;
+		else
+			*pkg_type = SM_PACKET_TYPE_PONG;
 
 		//|data|ping/pong|data
 		if (mod->processed) {
@@ -390,15 +395,19 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 			mod->lenght_tirgger = 2 + (isck_msk ? 4 : 0);	//等待下一个包头+掩码
 			mod->processed = 0;	
 
+			*pkg_type = SM_PACKET_TYPE_DATA;
+
 			//aband total
 			return total;
 		}
 		case 0x0A:
 		{
 			//收到pong
+			*pkg_type = SM_PACKET_TYPE_PONG;
 			break;
 		}
 		case 0x09: {
+			*pkg_type = SM_PACKET_TYPE_PING;
 			break;
 		}
 			
@@ -430,14 +439,14 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 	return 0;
 }
 
-int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset) {
+int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
 	uint32_t total = 0, capcity;
 	uint32_t len = mod->processed;
 
 
 	//如果已经完成握手
 	if (ss->flag.ws_handshake) {
-		return sf_ws_parse_frame(ss, data, data_len, mod, front_offset, back_offset, ss->flag.is_connect ? 0 : 1);
+		return sf_ws_parse_frame(ss, data, data_len, mod, front_offset, back_offset, pkg_type, ss->flag.is_connect ? 0 : 1);
 	}
 	else {
 		if (data_len > 4) {

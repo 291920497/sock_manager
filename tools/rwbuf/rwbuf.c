@@ -20,7 +20,14 @@ int32_t rwbuf_relc(rwbuf_t* rwb, uint32_t capacity) {
 		return SERROR_INPARAM_ERR;
 
 	if (rwb->size < capacity) {
-		void* buf = _rwbuf_realloc(rwb->buf, capacity);
+		void* buf = 0;
+		if (rwb->buf) {
+			buf = _rwbuf_realloc(rwb->buf, capacity);
+		}
+		else {
+			buf = _rwbuf_malloc(capacity);
+		}
+
 		if (!buf)
 			return SERROR_SYSAPI_ERR;
 

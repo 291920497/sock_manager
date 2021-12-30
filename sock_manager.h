@@ -10,9 +10,11 @@
 extern "C" {
 #endif//__cplusplus
 
-;
-
+#if (SM_MULTI_THREAD)
+session_manager_t* sm_init_manager(uint32_t session_cache_size, session_dispatch_data_cb dispatch_cb);
+#else
 session_manager_t* sm_init_manager(uint32_t session_cache_size);
+#endif//SM_MULTI_THREAD
 
 void sm_exit_manager(session_manager_t* sm);
 
