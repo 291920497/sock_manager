@@ -51,7 +51,7 @@ static void sf_timer_reconn_cb(uint32_t timer_id, void* udata, uint8_t udata_len
 	sock_session_t* ss, * p;
 	cds_list_for_each_entry_safe(ss, p, &sm->list_reconnect, elem_lively) {
 		if (sf_reconnect(ss) == SERROR_OK) {
-			cds_list_del(&ss->elem_lively);
+			cds_list_del_init(&ss->elem_lively);
 			cds_list_add_tail(&ss->elem_lively, &sm->list_lively);
 		}
 		else {
@@ -263,8 +263,8 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		}
 		else {
 			//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
-			/*static uint32_t count = 0;
-			printf("accept: %d\n", ++count);*/
+			static uint32_t count = 0;
+			printf("accept: %d\n", ++count);
 		}
 
 		if (ss->flag.tls) {
@@ -330,6 +330,7 @@ static void sf_pending_recv(session_manager_t* sm) {
 
 
 #if (SM_MULTI_THREAD)
+
 static int32_t sf_common_vehicle(sock_session_t* ss, uint32_t pkg_type) {
 	if (!ss)
 		return SERROR_INPARAM_ERR;
@@ -423,6 +424,7 @@ static void sf_call_decode_dispatch_fn(session_manager_t* sm) {
 							err2 = ef_insert_msg2vehicle(ebv, &buf, pkg_type);
 							if (err2 != SERROR_OK) {
 								ef_destory_vehicle(ebv);
+								ebv = 0;
 								break;
 							}
 						}
@@ -473,8 +475,8 @@ static void sf_call_decode_dispatch_fn(session_manager_t* sm) {
 }
 
 static void sf_submit_pkgs(session_manager_t* sm) {
-	uint32_t len, complete, total;
-	int8_t* ptr;
+	uint32_t len, complete, total, wlen;
+	int8_t* ptr, is_empty;
 	sock_session_t* ss;
 	external_buf_t* eb, * n;
 	external_buf_vehicle_t* pos, * p, * search;
@@ -483,12 +485,12 @@ static void sf_submit_pkgs(session_manager_t* sm) {
 		//销毁已经失效的session ,如果即将提交的数据包原有session已经失效, 那么丢弃这些数据包, 后面考虑是否将这个错误通知给调用线程
 		cds_list_for_each_entry_safe(pos, p, &sm->list_sndbuf, elem_sndbuf) {
 			//断开与链表的链接
-			cds_list_del(&pos->elem_sndbuf);
+			cds_list_del_init(&pos->elem_sndbuf);
 
-			sock_session_t* ss = pos->address;
+			ss = pos->address;
 			if (ss->uuid_hash != pos->hash) {
 				//断开链表后, 将这个载具下所有数据包删除
-				cds_list_del(&pos->elem_sndbuf);
+				cds_list_del_init(&pos->elem_sndbuf);
 				ef_destory_vehicle(pos);
 				continue;
 			}
@@ -498,8 +500,11 @@ static void sf_submit_pkgs(session_manager_t* sm) {
 			if (search) {
 				//移交数据包
 				cds_list_splice_tail(&pos->list_datas, &search->list_datas);
+				//清理链表内的数据
+				CDS_INIT_LIST_HEAD(&pos->list_datas);
 				//修改包长
 				search->total += pos->total;
+				//printf("ip: %s, port: %d, hash: %d, change: %d\n", ss->ip, ss->port, pos->hash, search->total);
 				//回收载具
 				ef_destory_vehicle(pos);
 			}
@@ -509,66 +514,67 @@ static void sf_submit_pkgs(session_manager_t* sm) {
 				cds_list_add_tail(&pos->elem_sndbuf, &sm->list_tidy);
 			}
 		}
+	}
 
-		//遍历整理后的数据
-		cds_list_for_each_entry_safe(pos, p, &sm->list_tidy, elem_sndbuf) {
-			ss = pos->address;
-			total = 0;
+	if (cds_list_empty(&sm->list_tidy))
+		return;
 
-			if (rwbuf_enough(&ss->wbuf, pos->total)) {
-				cds_list_for_each_entry_safe(eb, n, &pos->list_datas, elem_datas) {
-					ptr = rwbuf_start_ptr(&eb->data);
-					len = rwbuf_len(&eb->data);
-					if (len) {
-						total += rwbuf_append(&ss->wbuf, ptr, len);
-					}
-					else if (eb->type == SM_PACKET_TYPE_DESTORY) {
-						sm_del_session(ss);
+	//处理整理完成的数据
+	cds_list_for_each_entry_safe(pos, p, &sm->list_tidy, elem_sndbuf) {
+		ss = pos->address;
+		wlen = rwbuf_len(&ss->wbuf);
+		total = 0;
+		is_empty = 0;
+
+		if ((pos->total + wlen) <= sm->overflow) {
+			cds_list_for_each_entry_safe(eb, n, &pos->list_datas, elem_datas) {
+				len = rwbuf_len(&eb->data);
+				if (len) {
+					complete = rwbuf_append(&ss->wbuf, rwbuf_start_ptr(&eb->data), len);
+					total += complete;
+					//若缓冲区已经不够用了
+					if (len != complete) {
+						rwbuf_aband_front(&eb->data, complete);
 						break;
 					}
 				}
-
-				//断开已排序链表的连接
-				cds_list_del(&pos->elem_sndbuf);
-				//从红黑树上移除
-				rb_erase(&pos->rb_tidy, &sm->rb_tidy);
-				ef_destory_vehicle(pos);	
-			}
-			else {
-				cds_list_for_each_entry_safe(eb, n, &pos->list_datas, elem_datas) {
-					ptr = rwbuf_start_ptr(&eb->data);
-					len = rwbuf_len(&eb->data);
-					if (len) {
-						complete = rwbuf_append(&ss->wbuf, ptr, len);
-						if (complete != len) {
-							//截取一写入缓冲区的内存
-							rwbuf_aband_front(&eb->data, complete);
-							break;	//提前退出
-						}
-					}
-					else if (eb->type == SM_PACKET_TYPE_DESTORY) {
+				else {
+					if (eb->type == SM_PACKET_TYPE_DESTORY) {
 						sm_del_session(ss);
 					}
-
-					//删除已完成的消息
-					ef_remove_msgfvehicle(pos, eb);
+					else if (eb->type == SM_PACKET_TYPE_LASTWORK) {
+						ss->flag.lastwork = ~0;
+					}
 				}
-
-				//如果数据已经被处理完了
-				if (cds_list_empty(&pos->list_datas)) {
-					//断开已排序链表的连接
-					cds_list_del(&pos->elem_sndbuf);
-					//从红黑树上移除
-					rb_erase(&pos->rb_tidy, &sm->rb_tidy);
-					ef_destory_vehicle(pos);
-				}
+				//删除这个消息, 并更新数据总长
+				ef_remove_msgfvehicle(pos, eb);
 			}
 
-			if (total) {
-				//添加可写事件
-				sf_add_event(sm, ss, EV_WRITE);
+			//如果数据已经被处理完了
+			if (cds_list_empty(&pos->list_datas)) {
+				is_empty = 1;
 			}
 		}
+		else {
+			//删除
+			printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], total: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_MT_WBUF_OVERFLOW, (pos->total + wlen), "Data to be written, length overflow");
+			sm_del_session(ss);
+			is_empty = 1;
+		}
+
+		//如果数据已经被处理完了
+		if (is_empty) {
+			//断开已排序链表的连接
+			cds_list_del_init(&pos->elem_sndbuf);
+			//从红黑树上移除
+			rb_erase(&pos->rb_tidy, &sm->rb_tidy);
+			ef_destory_vehicle(pos);
+		}
+
+		if (total) {
+			sf_add_event(sm, ss, EV_WRITE);
+		}
+		
 	}
 }
 
@@ -646,18 +652,6 @@ static void sf_clean_offline(session_manager_t* sm) {
 	int rt;
 	sock_session_t* ss, * n;
 
-	//这一步原本是在sf_del_sesion内的操作, 但是为了迎合带数据的FIN报文, 所以在这里新增了这一块代码
-	//cds_list_for_each_entry_safe(ss, n, &sm->list_lively, elem_lively) {
-	//	if (ss->flag.fin_peer) {
-	//		//if (_SM_LIST_EMPTY(&ss->elem_online) == 0)
-	//		cds_list_del_init(&ss->elem_lively);
-
-	//		//加入到离线队列
-	//		if (cds_list_empty(&ss->elem_offline) == 0)
-	//			cds_list_add_tail(&ss->elem_offline, &ss->sm->list_offline);
-	//	}
-	//}
-
 	cds_list_for_each_entry_safe(ss, n, &sm->list_offline, elem_offline) {
 		cds_list_del_init(&ss->elem_offline);
 		cf_closesocket(ss->fd);
@@ -673,10 +667,10 @@ static void sf_clean_offline(session_manager_t* sm) {
 }
 
 #if(SM_MULTI_THREAD)
-session_manager_t* sm_init_manager(uint32_t session_cache_size, session_dispatch_data_cb dispatch_cb) {
+session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow, session_dispatch_data_cb dispatch_cb) {
 	if (!dispatch_cb) return 0;
 #else
-session_manager_t* sm_init_manager(uint32_t session_cache_size) {
+session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow) {
 #endif//SM_MULTI_THREAD
 
 
@@ -694,6 +688,8 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	memset(sm, 0, sizeof(session_manager_t));
 	sm->flag.running = 1;
 //	sm->ep_fd = -1;
+	sm->overflow = sndbuf_overflow;
+
 	memset(&behav, 0, sizeof(behav));
 	behav.decode_cb = tcp_default_decode_cb;
 
@@ -859,13 +855,13 @@ void sm_exit_manager(session_manager_t* sm) {
 	//清理即将下发的链表
 	external_buf_vehicle_t* ebv, * nex;
 	cds_list_for_each_entry_safe(ebv, nex, &sm->list_rcvbuf, elem_sndbuf) {
-		cds_list_del(&ebv->elem_sndbuf);
+		cds_list_del_init(&ebv->elem_sndbuf);
 		ef_destory_vehicle(ebv);
 	}
 
 	//清理接收到的待发送数据
 	cds_list_for_each_entry_safe(ebv, nex, &sm->list_sndbuf, elem_sndbuf) {
-		cds_list_del(&ebv->elem_sndbuf);
+		cds_list_del_init(&ebv->elem_sndbuf);
 		ef_destory_vehicle(ebv);
 	}
 
@@ -907,7 +903,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
 	char buf[256];
-	int rt, eno, fd, ev, optval = 1;
+	int rt, eno, fd, optval = 1;
 
 	if (!sm) return 0;
 
@@ -974,7 +970,7 @@ sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* i
 	if (!sm || fd < 0)
 		return 0;
 
-	int32_t rt, err = 0;
+	int32_t rt;
 	sock_session_t* ss = sf_cache_session(sm);
 	if (!ss)
 		return 0;
@@ -1015,7 +1011,7 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 	if (!sm)
 		return 0;
 
-	int fd, rt, eno, ev = 0;
+	int fd = -1, rt, eno;
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
 	char buf[256];
@@ -1134,6 +1130,7 @@ void sm_del_session(sock_session_t* ss) {
 #if(ENABLE_SSL)
 	if (ss->flag.tls) {
 		if (ss->tls_info.ssl) {
+			SSL_shutdown((SSL*)ss->tls_info.ssl);
 			SSL_free((SSL*)(ss->tls_info.ssl));
 			ss->tls_info.ssl = 0;
 		}
@@ -1180,25 +1177,24 @@ uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval, int32_t delay_ms
 	return ht_add_timer(sm->ht_timer, interval, delay_ms, repeat, on_timeout, udata, udata_len);
 }
 
-int32_t sm_send_fn(sock_session_t* ss, const char* data, uint32_t len) {
+int32_t sm_0copy_send_fn(sock_session_t* ss, const char* data, uint32_t len, uint8_t call_encode, uint8_t close_after_sending) {
 	int32_t rt;
 	if (data && len > 0) {
 		if (ss->flag.fin_peer == 0) {
-			if (ss->uevent.encode_fn) {
+			if (ss->uevent.encode_fn && call_encode)
 				rt = ss->uevent.encode_fn(data, len, &ss->wbuf);
-
-			}
-			else {
+			else
 				rt = rwbuf_append_complete(&ss->wbuf, data, len);
-			}
 
-			if (rt < 0)
+			if (rt < 0) 
 				return rt;
 
-			sf_add_event(ss->sm, ss, EV_WRITE);
-		}
+			if (close_after_sending)
+				ss->flag.lastwork = ~0;
 
-		return SERROR_OK;
+			return sf_add_event(ss->sm, ss, EV_WRITE);
+		}
+		return SERROR_PEER_DISCONN;
 	}
 	return SERROR_INPARAM_ERR;
 }
@@ -1386,10 +1382,6 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 			ss->recv_cb(ss);
 		}
 		if (events[i].events & EPOLLOUT) {
-			/*if (ss->flag.tls)
-				sf_tls_send_cb(ss);
-			else
-				sf_send_cb(ss);*/
 			ss->send_cb(ss);
 		}
 	}
