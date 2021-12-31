@@ -11,9 +11,9 @@ extern "C" {
 #endif//__cplusplus
 
 #if (SM_MULTI_THREAD)
-session_manager_t* sm_init_manager(uint32_t session_cache_size, session_dispatch_data_cb dispatch_cb);
+session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow, session_dispatch_data_cb dispatch_cb);
 #else
-session_manager_t* sm_init_manager(uint32_t session_cache_size);
+session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow);
 #endif//SM_MULTI_THREAD
 
 void sm_exit_manager(session_manager_t* sm);
@@ -35,7 +35,7 @@ int32_t sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int));
 
 uint32_t sm_add_timer(session_manager_t* sm, uint32_t interval, int32_t delay_ms, int32_t repeat, heap_timer_cb on_timeout, void* udata, uint8_t udata_len);
 
-int32_t sm_send_fn(sock_session_t* ss, const char* data, uint32_t len);
+int32_t sm_0copy_send_fn(sock_session_t* ss, const char* data, uint32_t len, uint8_t call_encode, uint8_t close_after_sending);
 
 int32_t sm_tls_enable(sock_session_t* ss, tls_opt_t* tls_opt, _OUT char* errstr);
 

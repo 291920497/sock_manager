@@ -62,6 +62,7 @@ typedef struct session_manager {
 	fd_set			rfdst;
 	fd_set			wfdst;
 #endif//_WIN32
+	uint32_t		overflow;			//该管理器下写缓冲区的溢出长度
 	manager_flag_t	flag;		//状态机
 
 	heap_timer_t* ht_timer;	//定时器

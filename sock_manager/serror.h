@@ -6,7 +6,9 @@
 #define SERROR_INPARAM_ERR		(-2)	//入参错误
 #define SERROR_MEMALC_ERR		(-3)	//内存分配失败
 #define SERROR_PEER_DISCONN		(-4)	//对端已经断开连接, reset by peer
-#define SERROR_DECLARE_PIPE_ERR	(-5)	//windows下目前只支持AF_INET
+#define SERROR_LOCAL_DISCONN	(-5)	//本端发起断开连接
+#define SERROR_DECLARE_PIPE_ERR	(-6)	//windows下目前只支持AF_INET
+#define SERROR_MT_WBUF_OVERFLOW	(-7)	//支持多线程模式下, 待写数据+滞留数据长度溢出sm_init_manager设置的长度
 
 
 //tls协议相关

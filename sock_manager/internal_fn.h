@@ -295,20 +295,19 @@ static int sf_try_accept(int __fd, sockaddr* __addr, socklen_t* __restrict __add
 	return fd;
 }
 
-static uint32_t sf_uncoded_send_fn(sock_session_t* ss, const char* data, uint32_t len) {
-	uint32_t rt;
+#if (SM_MULTI_THREAD)
+extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
+#endif//SM_MULTI_THREAD
 
-	if (!data || !len)
-		return 0;
+static void sf_finalwork_finished(sock_session_t* ss) {
+#if (SM_MULTI_THREAD)
+	external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
+	//若还有尚未发送的数据
+	if (ebv) return;
+#endif//SM_MULTI_THREAD
 
-	if (rwbuf_unused_len(&ss->wbuf)) {
-		rt = rwbuf_append(&ss->wbuf, data, len);
-		if (rt)
-			sf_add_event(ss->sm, ss, EV_WRITE);
-		return rt;
-	}
-
-	return 0;
+	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_LOCAL_DISCONN, 0, "Data transmission completed");
+	sm_del_session(ss);
 }
 
 static void sf_recv_cb(sock_session_t* ss) {
@@ -317,9 +316,8 @@ static void sf_recv_cb(sock_session_t* ss) {
 		return;
 
 	buf[0] = 0;
-	int32_t rt, eno, buflen;
+	int32_t rt, buflen, eno = 0;
 	
-
 	do {
 		buflen = rwbuf_unused_len(&(ss->rbuf));
 
@@ -425,7 +423,7 @@ static void sf_send_cb(sock_session_t* ss) {
 		return;
 
 	buf[0] = 0;
-	int32_t rt, eno, snd_len;
+	int32_t rt, snd_len, eno = 0;
 
 	do {
 		snd_len = rwbuf_len(&ss->wbuf);
@@ -484,6 +482,10 @@ static void sf_send_cb(sock_session_t* ss) {
 			//remove send pending
 			if (cds_list_empty(&ss->elem_pending_send) == 0)
 				cds_list_del_init(&ss->elem_pending_send);
+
+			//判断最后的任务是否已经结束
+			if (ss->flag.lastwork)
+				sf_finalwork_finished(ss);
 		}
 
 		//ok
@@ -725,7 +727,7 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 
 	if (serr != SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-	SSL_shutdown(ssl);
+	//SSL_shutdown(ssl);
 
 //	switch (serr) {
 //	case SERROR_SYSAPI_ERR:
@@ -999,6 +1001,10 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 				//remove send pending
 				if (cds_list_empty(&ss->elem_pending_send) == 0)
 					cds_list_del_init(&ss->elem_pending_send);
+
+				//判断最后的任务是否已经结束
+				if (ss->flag.lastwork)
+					sf_finalwork_finished(ss);
 			}
 
 			return;
@@ -1037,7 +1043,7 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 	} while (0);
 
 	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-	SSL_shutdown(ssl);
+	//SSL_shutdown(ssl);
 
 //	switch (serr) {
 //	case SERROR_SYSAPI_ERR:

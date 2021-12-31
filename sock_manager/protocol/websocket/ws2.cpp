@@ -163,7 +163,7 @@ static int sf_ws_handshake(sock_session_t* ss, const char* url, const char* host
 		}
 	}
 
-	rt = sf_uncoded_send_fn(ss, handshake, len);
+	rt = sm_0copy_send_fn(ss, handshake, len, 0, 0);
 
 	if(rt == len)
 		return SERROR_OK;
@@ -403,11 +403,11 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 		case 0x0A:
 		{
 			//收到pong
-			*pkg_type = SM_PACKET_TYPE_PONG;
+			//*pkg_type = SM_PACKET_TYPE_PONG;
 			break;
 		}
 		case 0x09: {
-			*pkg_type = SM_PACKET_TYPE_PING;
+			//*pkg_type = SM_PACKET_TYPE_PING;
 			break;
 		}
 			
@@ -565,38 +565,10 @@ static int32_t sf_encode_pingpoing_frame(rwbuf_t* out_buf, uint8_t is_ping, uint
 
 int32_t ws_svr_ping_fn(rwbuf_t* out_buf) {
 	return sf_encode_pingpoing_frame(out_buf, 1, 0);
-	/*int32_t rt;
-	struct ws_frame_protocol wfp;
-	memset(&wfp, 0, sizeof(wfp));
-	wfp.fin = 1;
-	wfp.opcode = 0x09;
-
-	char ws_head[16];
-	sf_ws_encode_protocol(ws_head, &wfp);
-
-	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
-	if (rt < 0)
-		return rt;
-
-	return SERROR_OK;*/
 }
 
 int32_t ws_svr_pong_fn(rwbuf_t* out_buf) {
 	return sf_encode_pingpoing_frame(out_buf, 0, 0);
-	/*int32_t rt;
-	struct ws_frame_protocol wfp;
-	memset(&wfp, 0, sizeof(wfp));
-	wfp.fin = 1;
-	wfp.opcode = 0x0A;
-
-	char ws_head[16];
-	sf_ws_encode_protocol(ws_head, &wfp);
-
-	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
-	if (rt < 0)
-		return rt;
-
-	return SERROR_OK;*/
 }
 
 int32_t ws_clt_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf) {
@@ -639,44 +611,8 @@ int32_t ws_clt_encode_fn(const char* data, uint32_t len, rwbuf_t* out_buf) {
 
 int32_t ws_clt_ping_fn(rwbuf_t* out_buf) {
 	return sf_encode_pingpoing_frame(out_buf, 1, 0);
-	/*int32_t rt;
-	struct ws_frame_protocol wfp;
-	memset(&wfp, 0, sizeof(wfp));
-	wfp.fin = 1;
-	wfp.opcode = 0x09;
-	wfp.mask = 1;
-	for (int i = 0; i < 4; ++i) {
-		wfp.mask_code[i] = rand() & 255;
-	}
-
-	char ws_head[16];
-	sf_ws_encode_protocol(ws_head, &wfp);
-
-	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
-	if (rt < 0)
-		return rt;
-
-	return SERROR_OK;*/
 }
 
 int32_t ws_clt_pong_fn(rwbuf_t* out_buf) {
 	return sf_encode_pingpoing_frame(out_buf, 1, 0);
-	/*int32_t rt;
-	struct ws_frame_protocol wfp;
-	memset(&wfp, 0, sizeof(wfp));
-	wfp.fin = 1;
-	wfp.opcode = 0x0A;
-	wfp.mask = 1;
-	for (int i = 0; i < 4; ++i) {
-		wfp.mask_code[i] = rand() & 255;
-	}
-
-	char ws_head[16];
-	sf_ws_encode_protocol(ws_head, &wfp);
-
-	rt = rwbuf_append_complete(out_buf, ws_head, wfp.head_len);
-	if (rt < 0)
-		return rt;
-
-	return SERROR_OK;*/
 }

@@ -38,13 +38,13 @@
 #endif//MAX_USERDATA_LEN
 
 #ifndef _WIN32
-#define NUM_ET EPOLLET
 #define NUM_IN EPOLLIN
 #define NUM_OUT EPOLLOUT
+#define NUM_ET EPOLLET
 #else
-#define NUM_ET (1 << 31)
-#define NUM_IN (1 << 0)
+#define NUM_IN	(1 << 0)
 #define NUM_OUT (1 << 2)
+#define NUM_ET	(1 << 31)
 #endif//_WIN32
 
 #define _IN 
@@ -55,18 +55,39 @@
 #define _sm_free	free
 
 typedef enum {
-	EV_ET = NUM_ET,
-	EV_RECV = NUM_IN,
-	EV_WRITE = NUM_OUT
+	EV_ET		= NUM_ET,
+	EV_RECV		= NUM_IN,
+	EV_WRITE	= NUM_OUT
 }sm_event_e;
 
+//以下统称sm_run函数的调用线程为主线程
+
+/*
+*	单线程模式:
+*	SM_PACKET_TYPE_NONE: 用于初始化, 以及在解包回调中结合返回值控制主线程行为
+*	SM_PACKET_TYPE_CREATE: 通知对应的会话被创建
+*	SM_PACKET_TYPE_DESTORY: 通知对应的会话被已经断开连接
+*	SM_PACKET_TYPE_DATA: 通知一个完成数据包到达
+*	SM_PACKET_TYPE_PING: 通知这是一个ping包
+*	SM_PACKET_TYPE_PONG: 通知这是一个pong包
+* 
+*	支持多线程模式:
+*	主线程->子线程: 参照单线程模式
+* 
+*	子线程->主线程, 只特别处理以下事件:
+*	SM_PACKET_TYPE_DESTORY: 使该会话直接断开连接, 注意: 这将舍弃主线程所有尚未发送的数据
+*	SM_PACKET_TYPE_DATA/PING/PONG: 通知需要发送一个完整的数据包
+*	SM_PACKET_TYPE_LASTWORK: 使该会话将接受到的数据发送完成后断开连接
+*/
+
 typedef enum{
-	SM_PACKET_TYPE_NONE = 0,
-	SM_PACKET_TYPE_CREATE,
-	SM_PACKET_TYPE_DESTORY,
-	SM_PACKET_TYPE_DATA,
-	SM_PACKET_TYPE_PING,
-	SM_PACKET_TYPE_PONG,
+	SM_PACKET_TYPE_NONE		= 0,
+	SM_PACKET_TYPE_CREATE	= 1 << 0,
+	SM_PACKET_TYPE_DESTORY	= 1 << 1,
+	SM_PACKET_TYPE_DATA		= 1 << 2,
+	SM_PACKET_TYPE_PING		= 1 << 3,
+	SM_PACKET_TYPE_PONG		= 1 << 4,
+	SM_PACKET_TYPE_LASTWORK	= 1 << 5,
 }sm_enum_packet_type;
 
 //sock_session 的状态机
@@ -75,7 +96,7 @@ typedef struct session_flag {
 //	int32_t		fin_local : 1;				//是否由本地发起fin/reset报文
 
 	int32_t		comming : 1;				//是否有数据到来, 预防带数据的fin报文, 它也应该被处理
-//	int32_t		last_shout : 1;				//如果fin由本地发起, 那么判断是否最后[一次]发送缓冲区内的数据
+	int32_t		lastwork : 1;				//期望在缓冲区中的数据发送完成后断开连接
 
 	int32_t		is_connect;					//是否是客户端
 
