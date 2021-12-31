@@ -85,8 +85,10 @@ static int32_t ef_insert_msg2vehicle(external_buf_vehicle_t* ebv, rwbuf_t* buf, 
 	if (!ebv || !buf) {
 		return SERROR_INPARAM_ERR;
 	}
+
 	external_buf_t* eb = (external_buf_t*)_sm_malloc(sizeof(external_buf_t));
 	if (eb) {
+		rwbuf_init(&eb->data);
 		rwbuf_swap(&eb->data, buf);
 		eb->type = type;
 		cds_list_add_tail(&eb->elem_datas, &ebv->list_datas);
@@ -124,7 +126,7 @@ static void ef_deliver_pkgs(session_manager_t* sm ,cds_list_head_t* vehicle) {
 		osspin_lk_lock(&sm->lk_sndbuf);
 		cds_list_splice_tail(vehicle, &sm->list_sndbuf);
 		osspin_lk_unlock(&sm->lk_sndbuf);
-		//CDS_INIT_LIST_HEAD(vehicle);
+		CDS_INIT_LIST_HEAD(vehicle);
 
 		//使epoll_wait/select 解除阻塞
 		send(fd, &ch, 1, 0);
@@ -136,40 +138,45 @@ static void ef_deliver_pkgs(session_manager_t* sm ,cds_list_head_t* vehicle) {
 //rbtree
 /**********************************************************/
 //数据整理 rbtree function
-static external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash) {
-	rb_node_t* node = root->rb_node;
+
+//在其他模块需要引用
+external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash){
+	struct rb_node* n = root->rb_node;
+	external_buf_vehicle_t* page;
 	uint32_t rhash = 0;
 
-	while (node) {
-		external_buf_vehicle_t* this_node = caa_container_of(node, external_buf_vehicle_t, rb_tidy);
-		rhash = this_node->hash;
+	while (n)
+	{
+		page = rb_entry(n, external_buf_vehicle_t, rb_tidy);
+		rhash = page->hash;
 
-		//if (hash < this_info->hash)
 		if (hash < rhash)
-			node = node->rb_left;
-		else if (hash < rhash)
-			node = node->rb_right;
+			n = n->rb_left;
+		else if (hash > rhash)
+			n = n->rb_right;
 		else
-			return this_node;
+			return page;
 	}
 	return NULL;
 }
 
-static int32_t ef_tidy_insert(rb_root_t* root, external_buf_vehicle_t* ebv) {
+
+static inline int32_t ef_tidy_insert(rb_root_t* root, external_buf_vehicle_t* ebv) {
 	struct rb_node** new_node = &(root->rb_node), * parent = NULL;
 	uint32_t rhash;
 	uint32_t hash = ebv->hash;
+	external_buf_vehicle_t* page;
 
 
 	/* Figure out where to put new_node node */
 	while (*new_node) {
-		external_buf_vehicle_t* this_node = caa_container_of(*new_node, external_buf_vehicle_t, rb_tidy);
-		rhash = this_node->hash;
+		page = rb_entry(*new_node, external_buf_vehicle_t, rb_tidy);
+		rhash = page->hash;
 
 		parent = *new_node;
 		if (hash < rhash)
 			new_node = &((*new_node)->rb_left);
-		else if (hash < rhash)
+		else if (hash > rhash)
 			new_node = &((*new_node)->rb_right);
 		else
 			return 0;
