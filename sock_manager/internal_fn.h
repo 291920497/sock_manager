@@ -295,16 +295,27 @@ static int sf_try_accept(int __fd, sockaddr* __addr, socklen_t* __restrict __add
 	return fd;
 }
 
-#if (SM_MULTI_THREAD)
-extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
-#endif//SM_MULTI_THREAD
+//#if (SM_DISPATCH_MODEL)
+//extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
+//#endif//SM_DISPATCH_MODEL
 
+
+extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
 static void sf_finalwork_finished(sock_session_t* ss) {
-#if (SM_MULTI_THREAD)
-	external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
-	//若还有尚未发送的数据
-	if (ebv) return;
-#endif//SM_MULTI_THREAD
+//#if (SM_DISPATCH_MODEL)
+//	external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
+//	//若还有尚未发送的数据
+//	if (ebv) return;
+//#endif//SM_DISPATCH_MODEL
+//
+//	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_LOCAL_DISCONN, 0, "Data transmission completed");
+//	sm_del_session(ss);
+
+	if (ss->sm->flag.dispatch) {
+		external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
+		//若还有尚未发送的数据
+		if (ebv) return;
+	}
 
 	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_LOCAL_DISCONN, 0, "Data transmission completed");
 	sm_del_session(ss);
@@ -320,18 +331,6 @@ static void sf_recv_cb(sock_session_t* ss) {
 	
 	do {
 		buflen = rwbuf_unused_len(&(ss->rbuf));
-
-#if TEST_CODE
-		//如果已经没有额外可用的buffer
-		if (buflen == 0) {
-			printf("rwbuf->len = 0\n");
-
-			//加入未决队列中, 理论上, 这里是不会执行到的.(在当前线程读写正常的前提下)
-			if (cds_list_empty(&ss->elem_pending_recv))
-				cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
-			return;
-		}
-#endif
 
 		int rd = recv(ss->fd, (char*)rwbuf_start_ptr(&(ss->rbuf)) + rwbuf_len(&(ss->rbuf)), buflen, 0);
 		if (rd == -1) {
@@ -366,27 +365,8 @@ static void sf_recv_cb(sock_session_t* ss) {
 			break;
 		}
 
-		//et model add pending recv list
-		/*if (ss->flag.etmod & EV_ET) {
-			if (_SM_LIST_EMPTY(&ss->elem_pending_recv))
-				_SM_LIST_ADD_TAIL(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
-		}*/
-
 		if (cds_list_empty(&ss->elem_pending_recv))
 			cds_list_add_tail(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
-
-		/*
-		if (rd < buflen) {
-			//如何读到的长度不等于提供的的长度, 那么说明读完了, 从未决队列中移除
-			if (_SM_LIST_EMPTY(&ss->elem_pending_recv) == 0)
-				_SM_LIST_DEL_INIT(&ss->elem_pending_recv);
-		}
-		else {
-			//如果读到的长度等于了提供的长度, 那么可能存在没读完的情况,按照EINTR处理
-			if (_SM_LIST_EMPTY(&ss->elem_pending_recv))
-				_SM_LIST_ADD_TAIL(&ss->elem_pending_recv, &ss->sm->list_pending_recv);
-		}
-		*/
 
 		//数据长度发生了改变, 可以尝试解包
 		if (cds_list_empty(&ss->elem_changed))
@@ -404,15 +384,6 @@ static void sf_recv_cb(sock_session_t* ss) {
 	if (rt != SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, eno, buf);
 
-//	if (rt == SERROR_SYSAPI_ERR) {
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_SYSAPI_ERR, eno, buf);
-//	}
-//#ifdef TEST_CODE
-//	else if (rt == SERROR_PEER_DISCONN)
-//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-//#endif
-
-	//如果是服务器则暂不回收, 等待重连
 	sm_del_session(ss);
 }
 
@@ -495,39 +466,8 @@ static void sf_send_cb(sock_session_t* ss) {
 	if (rt != SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, rt, eno, buf);
 
-//	if (rt == SERROR_SYSAPI_ERR) {
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_SYSAPI_ERR, eno, buf);
-//	}
-//		//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, eno, buf);
-//	else if (rt == SERROR_PEER_DISCONN) {
-//#ifdef TEST_CODE
-//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-//#endif//TEST_CODE
-//	}
-
-	//sm_del_session(ss);
-	//如果是服务器则暂不回收, 等待重连
-
 	sm_del_session(ss);
 }
-
-//tls
-
-
-
-//#if (ENABLE_SSL)
-//static int32_t sf_tls_err(SSL* ssl, int32_t rc) {
-//	int32_t err = SSL_get_error(ssl, rc);
-//	//清除当前线程的错误
-//	ERR_clear_error();
-//
-//	//暂时不太搞得清楚其他错误的具体原因
-//	//if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
-//	//	return SSL_ERROR_NONE;
-//
-//	return err;
-//}
-//#endif//ENABLE_SSL
 
 static int32_t sf_tls_read_err(sock_session_t* ss, int32_t rd, _OUT int32_t* errcode, _OUT char* errstr) {
 	int rt, err, eno, serr = 0;
@@ -727,43 +667,11 @@ static void sf_tls_recv_cb(sock_session_t* ss) {
 
 	if (serr != SERROR_PEER_DISCONN)
 		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-	//SSL_shutdown(ssl);
-
-//	switch (serr) {
-//	case SERROR_SYSAPI_ERR:
-//		//printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-//		break;
-//	case SERROR_PEER_DISCONN:
-//#ifdef TEST_CODE
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-//#endif//TEST_CODE
-//		break;
-//		//以下都是SSL的错误了
-//	default:
-//		SSL_shutdown(ssl);
-//		//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, "Active shutdown");
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-//	}
 
 	sm_del_session(ss);
 
 #endif//ENABLE_SSL
 }
-
-//static void sf_tls_recv_cb2(sock_session_t* ss) {
-//	if (ss->flag.fin_peer)
-//		return;
-//
-//#if(ENABLE_SSL)
-//
-//	int32_t rt = 0, err, eno, rd, serr = 0;
-//	SSL* ssl = (SSL*)(ss->tls_info.ssl);
-//
-//	//判断
-//
-//#endif//ENABLE_SSL
-//}
 
 static int32_t sf_tls_send_err(sock_session_t* ss, int32_t sd, _OUT int32_t* errcode, _OUT char* errstr) {
 	int rt, err, eno, serr = 0;
@@ -870,85 +778,6 @@ static int32_t sf_tls_send_err(sock_session_t* ss, int32_t sd, _OUT int32_t* err
 	return serr;
 }
 
-//static void sf_tls_send_cb(sock_session_t* ss) {
-//	if (ss->flag.fin_peer)
-//		return;
-//
-//#if (ENABLE_SSL)
-//	int32_t rt, snd_len, err = 0, eno, sd, serr = 0;
-//	SSL* ssl = (SSL*)ss->tls_info.ssl;
-//
-//	////是否正在重新协商
-//	//if (ss->flag.tls_wwantr) {
-//	//	//立即还原可写事件调用读
-//	//	ss->flag.tls_wwantr = 0;
-//	//	sf_tls_recv_cb(ss);
-//	//	return;
-//	//}
-//
-//	do {
-//		snd_len = RWBUF_GET_LEN(&ss->wbuf);
-//		//没有数据可以发送, 这里不在外面判断, 为了应对TLS的重新协商
-//		if (!snd_len) return;
-//
-//		sd = SSL_write(ssl, RWBUF_START_PTR(&ss->wbuf), snd_len);
-//		if (sd <= 0) {
-//			//写判断错误
-//			serr = sf_tls_send_err(ss, sd, &rt);
-//			//预期内的错误
-//			if (serr == SERROR_OK)
-//				return;
-//
-//			break;
-//		}
-//
-//		rwbuf_aband_front(&ss->wbuf, sd);
-//		//if not complated, 如果请求发送的长度 > 成功发送的长度, 那么任务尚未完成
-//		if (snd_len - sd) {
-//			if (sf_add_event(ss->sm, ss, EV_WRITE) != 0) {
-//				serr = SERROR_SYSAPI_ERR;
-//				break;
-//			}
-//
-//			rwbuf_replan(&ss->wbuf);
-//
-//			//add send pending
-//			if (cds_list_empty(&ss->elem_pending_send))
-//				cds_list_add_tail(&ss->elem_pending_send, &ss->sm->list_pending_send);
-//		}
-//		else {
-//			sf_del_event(ss->sm, ss, EV_WRITE);
-//			//remove send pending
-//			if (cds_list_empty(&ss->elem_pending_send) == 0)
-//				cds_list_del_init(&ss->elem_pending_send);
-//		}
-//
-//		return;
-//	} while (0);
-//
-//	switch (serr) {
-//	case SERROR_SYSAPI_ERR:
-//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errno, strerror(errno));
-//		break;
-//	case SERROR_PEER_DISCONN:
-//#ifdef TEST_CODE
-//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-//#endif//TEST_CODE
-//		break;
-//		//以下都是SSL的错误了
-//	default:
-//		SSL_shutdown(ssl);
-//		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], serr: [%d], errno: [%d], tls_err: [%d], ssl_err: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errno, rt, err, "Active shutdown");
-//	}
-//
-//	if (cds_list_empty(&ss->elem_servers))
-//		sm_del_session(ss);
-//	else
-//		sf_del_session(ss, 1);
-//
-//#endif//ENABLE_SSL
-//}
-
 static void sf_tls_send_cb(sock_session_t* ss) {
 	if (ss->flag.fin_peer)
 		return;
@@ -1043,23 +872,7 @@ static void sf_tls_send_cb(sock_session_t* ss) {
 	} while (0);
 
 	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-	//SSL_shutdown(ssl);
-
-//	switch (serr) {
-//	case SERROR_SYSAPI_ERR:
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, errcode, "System api error");
-//		break;
-//	case SERROR_PEER_DISCONN:
-//#ifdef TEST_CODE
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, "reset by peer");
-//#endif//TEST_CODE
-//		break;
-//		//以下都是SSL的错误了
-//	default:
-//		SSL_shutdown(ssl);
-//		printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, serr, errcode, errstr);
-//	}
-
+	
 	sm_del_session(ss);
 
 #endif//ENABLE_SSL
@@ -1143,12 +956,6 @@ static int32_t sf_reconnect(sock_session_t* ss) {
 
 	if (ss->fd != -1) {
 		rt = cf_closesocket(ss->fd);
-//#ifndef _WIN32
-//		rt = close(ss->fd);
-//#else
-//		//closecok
-//		rt = closesocket(ss->fd);
-//#endif//_WIN32
 
 		if (rt != 0)
 			return SERROR_SYSAPI_ERR;

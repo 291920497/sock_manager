@@ -25,9 +25,10 @@
 #include "tools/common/common_fn.h"
 #include "protocol/tcp_default/tcp_default.h"
 
-#if (SM_MULTI_THREAD)
+//#if (SM_DISPATCH_MODEL)
+#if 1
 #include "external_fn.h"
-#endif//SM_MULTI_THREAD
+#endif//SM_DISPATCH_MODEL
 
 #if (ENABLE_SSL)
 #include <openssl/err.h>
@@ -81,7 +82,7 @@ static void sf_timer_heart_timeout_cb(uint32_t timer_id, void* udata, uint8_t ud
 	}
 }
 
-static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port, uint32_t send_len, session_rw recv_cb, session_rw send_cb, session_behavior_t* uevent, void* udata/*, uint16_t udata_len*/) {
+static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, int32_t fd, const char* ip, uint16_t port, uint32_t rcvlen, uint32_t sndlen, uint32_t snd_overflow, session_rw recv_cb, session_rw send_cb, session_behavior_t* uevent, void* udata/*, uint16_t udata_len*/) {
 	if (!ss || !sm/* || udata_len > MAX_USERDATA_LEN*/)
 		return SERROR_INPARAM_ERR;
 
@@ -91,6 +92,7 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 	ss->epoll_state = 0;
 	ss->sm = sm;
 	ss->port = port;
+	ss->overflow = snd_overflow;
 	ss->recv_cb = recv_cb;
 	ss->send_cb = send_cb;
 	ss->last_active = time(0);
@@ -105,12 +107,14 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 		memcpy(&ss->udata, &udata, udata_len);*/
 	
 
-	if (send_len) {
-		rt = rwbuf_relc(&ss->wbuf, send_len);
+	if (rcvlen) {
+		rt = rwbuf_relc(&ss->rbuf, rcvlen);
 		if (rt != SERROR_OK)
 			goto clean;
+	}
 
-		rt = rwbuf_relc(&ss->rbuf, send_len);
+	if (sndlen) {
+		rt = rwbuf_relc(&ss->wbuf, sndlen);
 		if (rt != SERROR_OK)
 			goto clean;
 	}
@@ -227,9 +231,11 @@ static void sf_free_session(session_manager_t* sm, sock_session_t* ss) {
 
 static void sf_accpet_cb(sock_session_t* ss) {
 	do {
+		session_opt_t opt;
 		struct sockaddr_in c_sin;
 		socklen_t s_len = sizeof(c_sin);
 		memset(&c_sin, 0, sizeof(c_sin));
+		memset(&opt, 0, sizeof(opt));
 
 		static char errstr[256];
 		int32_t c_fd, try_count = 1, serr = 0, errcode = 0;
@@ -254,18 +260,25 @@ static void sf_accpet_cb(sock_session_t* ss) {
 		unsigned short port = ntohs(c_sin.sin_port);
 		//printf("fd: %d\n", c_fd);
 		//sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, ss->wbuf.size, &ss->uevent, ss->udata, ss->udatalen);
-		sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, ss->wbuf.size, &ss->uevent, ss->udata/*, ss->udatalen*/);
+
+		opt.rcvlen = ss->rbuf.size;
+		opt.sndlen = ss->wbuf.size;
+		opt.overflow = ss->overflow;
+		memcpy(&opt.behav, &ss->uevent, sizeof(session_behavior_t));
+		opt.udata = ss->udata;
+
+		sock_session_t* css = sm_add_accepted(ss->sm, c_fd, ip, port, &opt);
 		if (!css) {
 			//系统API调用错误 查看errno
 			printf("[%s] [%s:%d] [%s], errno: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, errno, strerror(errno));
 			cf_closesocket(c_fd);
 			return;
 		}
-		else {
-			//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
-			static uint32_t count = 0;
-			printf("accept: %d\n", ++count);
-		}
+		//else {
+		//	//printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, css->ip, css->port, "accept");
+		//	static uint32_t count = 0;
+		//	printf("accept: %d\n", ++count);
+		//}
 
 		if (ss->flag.tls) {
 			serr = sf_tls_enable_from_ctx(css, ss->tls_info.ctx, &errcode, errstr);
@@ -329,7 +342,8 @@ static void sf_pending_recv(session_manager_t* sm) {
 }
 
 
-#if (SM_MULTI_THREAD)
+//#if (SM_DISPATCH_MODEL)
+#if 1
 
 static int32_t sf_common_vehicle(sock_session_t* ss, uint32_t pkg_type) {
 	if (!ss)
@@ -462,8 +476,8 @@ static void sf_call_decode_dispatch_fn(session_manager_t* sm) {
 		CDS_INIT_LIST_HEAD(&sm->list_rcvbuf);
 
 		//回调给用户
-		if (sm->dispath_data_cb)
-			sm->dispath_data_cb(sm, pkgs);
+		if (sm->dispath_cb)
+			sm->dispath_cb(sm, pkgs);
 	}
 
 	return;
@@ -526,7 +540,7 @@ static void sf_submit_pkgs(session_manager_t* sm) {
 		total = 0;
 		is_empty = 0;
 
-		if ((pos->total + wlen) <= sm->overflow) {
+		if ((pos->total + wlen) <= ss->overflow) {
 			cds_list_for_each_entry_safe(eb, n, &pos->list_datas, elem_datas) {
 				len = rwbuf_len(&eb->data);
 				if (len) {
@@ -578,7 +592,7 @@ static void sf_submit_pkgs(session_manager_t* sm) {
 	}
 }
 
-#else
+//#else
 
 //回调解包函数
 static void sf_call_decode_fn(session_manager_t* sm) {
@@ -622,11 +636,10 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 
 					//若需要处理的数据大于1
 					if ((frame = (rt - front_offset - back_offset)) >= 0) {
-#if (BETA_CODE)
 						if (ss->uevent.complete_cb) {
-							ss->uevent.complete_cb(ss, ss->uuid_hash, pkg_type, (const char*)(data + front_offset), frame, ss->udata);
+							//ss->uevent.complete_cb(ss, ss->uuid_hash, pkg_type, (const char*)(data + front_offset), frame, ss->udata);
+							ss->uevent.complete_cb(ss, ss->uuid_hash, pkg_type, frame, (const char*)(data + front_offset), frame, ss->udata, 0, 0);
 						}
-#endif//BETA_CODE
 					}
 					else {
 						//解包信息错误
@@ -645,7 +658,7 @@ static void sf_call_decode_fn(session_manager_t* sm) {
 		cds_list_del_init(&ss->elem_changed);
 	}
 }
-#endif//SM_MULTI_THREAD
+#endif//SM_DISPATCH_MODEL
 
 //清理所有断开连接的session
 static void sf_clean_offline(session_manager_t* sm) {
@@ -666,19 +679,19 @@ static void sf_clean_offline(session_manager_t* sm) {
 	}
 }
 
-#if(SM_MULTI_THREAD)
-session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow, session_dispatch_data_cb dispatch_cb) {
-	if (!dispatch_cb) return 0;
-#else
-session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_overflow) {
-#endif//SM_MULTI_THREAD
-
+//#if(SM_DISPATCH_MODEL)
+//session_manager_t* sm_init_manager(uint32_t session_cache_size, session_dispatch_data_cb dispatch_cb) {
+//	if (!dispatch_cb) return 0;
+//#else
+//session_manager_t* sm_init_manager(uint32_t session_cache_size) {
+//#endif//SM_DISPATCH_MODEL
+session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 
 	int32_t rt = -1, __domain = AF_UNIX, port;
 	uint32_t addrlen = sizeof(struct sockaddr_in);
 	sock_session_t* ss;
 	session_manager_t* sm;
-	session_behavior_t behav;
+	session_opt_t opt;
 	struct sockaddr_in sin;
 	
 
@@ -688,10 +701,12 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_
 	memset(sm, 0, sizeof(session_manager_t));
 	sm->flag.running = 1;
 //	sm->ep_fd = -1;
-	sm->overflow = sndbuf_overflow;
 
-	memset(&behav, 0, sizeof(behav));
-	behav.decode_cb = tcp_default_decode_cb;
+	memset(&opt, 0, sizeof(opt));
+	opt.rcvlen = 8192;
+	opt.sndlen = 8192;
+	opt.behav.decode_cb = tcp_default_decode_cb;
+	opt.udata = sm;
 
 	//Init all list
 	CDS_INIT_LIST_HEAD(&(sm->list_lively));
@@ -703,13 +718,13 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_
 	CDS_INIT_LIST_HEAD(&(sm->list_pending_send));
 	CDS_INIT_LIST_HEAD(&(sm->list_session_cache));
 
-#if (SM_MULTI_THREAD)
-	CDS_INIT_LIST_HEAD(&(sm->list_rcvbuf));
-	CDS_INIT_LIST_HEAD(&(sm->list_sndbuf));
-	CDS_INIT_LIST_HEAD(&(sm->list_tidy));
-	//init rb root 
-	sm->rb_tidy.rb_node = NULL;
-#endif//SM_MULTI_THREAD
+//#if (SM_DISPATCH_MODEL)
+//	CDS_INIT_LIST_HEAD(&(sm->list_rcvbuf));
+//	CDS_INIT_LIST_HEAD(&(sm->list_sndbuf));
+//	CDS_INIT_LIST_HEAD(&(sm->list_tidy));
+//	//init rb root 
+//	sm->rb_tidy.rb_node = NULL;
+//#endif//SM_DISPATCH_MODEL
 
 	//create cache_session
 	for (int i = 0; i < session_cache_size; ++i) {
@@ -744,24 +759,24 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size, uint32_t sndbuf_
 	__domain = AF_INET;
 #endif//_WIN32
 
-#if(SM_MULTI_THREAD)
-	//pipe
-	rt = cf_socketpair(__domain, SOCK_STREAM, 0, sm->fdpipe);
-	if (rt == -1)
-		goto clean;
-
-	/*rt = getsockname(fdpipe[0], (struct sockaddr*)&sin, &addrlen);
-	if (rt == -1)
-		goto clean;*/
-
-	ss = sm_add_accepted(sm, sm->fdpipe[0], "pipeline", 0, 8192, &behav, sm);
-	if (!ss)
-		goto clean;
-
-	osspin_lk_init(&sm->lk_sndbuf);
-	sm->dispath_data_cb = dispatch_cb;
-
-#endif//SM_MULTI_THREAD
+//#if(SM_DISPATCH_MODEL)
+//	//pipe
+//	rt = cf_socketpair(__domain, SOCK_STREAM, 0, sm->fdpipe);
+//	if (rt == -1)
+//		goto clean;
+//
+//	/*rt = getsockname(fdpipe[0], (struct sockaddr*)&sin, &addrlen);
+//	if (rt == -1)
+//		goto clean;*/
+//
+//	ss = sm_add_accepted(sm, sm->fdpipe[0], "pipeline", 0, &opt);
+//	if (!ss)
+//		goto clean;
+//
+//	osspin_lk_init(&sm->lk_sndbuf);
+//	sm->dispath_cb = dispatch_cb;
+//
+//#endif//SM_DISPATCH_MODEL
 
 	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, -(MAX_RECONN_SERVER_TIMEOUT * 1000) + 500, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 
@@ -788,17 +803,17 @@ clean:
 		cf_closesocket(sm->ep_fd);
 #endif//_WIN32
 
-#if(SM_MULTI_THREAD)
-	if (sm->fdpipe[0] != -1) {
-		cf_closesocket(sm->fdpipe[0]);
-		sm->fdpipe[0] = -1;
-	}
-	
-	if (sm->fdpipe[1] != -1) {
-		cf_closesocket(sm->fdpipe[1]);
-		sm->fdpipe[1] = -1;
-	}
-#endif//SM_MULTI_THREAD.
+//#if(SM_DISPATCH_MODEL)
+//	if (sm->fdpipe[0] != -1) {
+//		cf_closesocket(sm->fdpipe[0]);
+//		sm->fdpipe[0] = -1;
+//	}
+//	
+//	if (sm->fdpipe[1] != -1) {
+//		cf_closesocket(sm->fdpipe[1]);
+//		sm->fdpipe[1] = -1;
+//	}
+//#endif//SM_DISPATCH_MODEL.
 
 	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -813,6 +828,7 @@ void sm_exit_manager(session_manager_t* sm) {
 	if (sm == 0)
 		return;
 
+	sm->flag.running = 0;
 	//clean resources and all session
 	sock_session_t* pos, * n;
 
@@ -828,6 +844,7 @@ void sm_exit_manager(session_manager_t* sm) {
 	}
 
 	cds_list_for_each_entry_safe(pos, n, &sm->list_listens, elem_listens) {
+		//cds_list_del_init(&pos->elem_listens);
 		sm_del_session(pos);
 		printf("[%s] [%s:%d] [%s], ip: [%s] port: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, pos->ip, pos->port, "Active shutdown");
 	}
@@ -848,33 +865,60 @@ void sm_exit_manager(session_manager_t* sm) {
 		close(sm->ep_fd);
 #endif//_WIN32
 
-#if(SM_MULTI_THREAD)
+	if (sm->flag.dispatch) {
+		osspin_lk_exit(&sm->lk_sndbuf);
 
-	osspin_lk_exit(&sm->lk_sndbuf);
+		//清理即将下发的链表
+		external_buf_vehicle_t* ebv, * nex;
+		cds_list_for_each_entry_safe(ebv, nex, &sm->list_rcvbuf, elem_sndbuf) {
+			cds_list_del_init(&ebv->elem_sndbuf);
+			ef_destory_vehicle(ebv);
+		}
 
-	//清理即将下发的链表
-	external_buf_vehicle_t* ebv, * nex;
-	cds_list_for_each_entry_safe(ebv, nex, &sm->list_rcvbuf, elem_sndbuf) {
-		cds_list_del_init(&ebv->elem_sndbuf);
-		ef_destory_vehicle(ebv);
+		//清理接收到的待发送数据
+		cds_list_for_each_entry_safe(ebv, nex, &sm->list_sndbuf, elem_sndbuf) {
+			cds_list_del_init(&ebv->elem_sndbuf);
+			ef_destory_vehicle(ebv);
+		}
+
+		if (sm->fdpipe[0] != -1) {
+			cf_closesocket(sm->fdpipe[0]);
+			sm->fdpipe[0] = -1;
+		}
+
+		if (sm->fdpipe[1] != -1) {
+			cf_closesocket(sm->fdpipe[1]);
+			sm->fdpipe[1] = -1;
+		}
 	}
 
-	//清理接收到的待发送数据
-	cds_list_for_each_entry_safe(ebv, nex, &sm->list_sndbuf, elem_sndbuf) {
-		cds_list_del_init(&ebv->elem_sndbuf);
-		ef_destory_vehicle(ebv);
-	}
-
-	if (sm->fdpipe[0] != -1) {
-		cf_closesocket(sm->fdpipe[0]);
-		sm->fdpipe[0] = -1;
-	}
-
-	if (sm->fdpipe[1] != -1) {
-		cf_closesocket(sm->fdpipe[1]);
-		sm->fdpipe[1] = -1;
-	}
-#endif//SM_MULTI_THREAD
+//#if(SM_DISPATCH_MODEL)
+//
+//	osspin_lk_exit(&sm->lk_sndbuf);
+//
+//	//清理即将下发的链表
+//	external_buf_vehicle_t* ebv, * nex;
+//	cds_list_for_each_entry_safe(ebv, nex, &sm->list_rcvbuf, elem_sndbuf) {
+//		cds_list_del_init(&ebv->elem_sndbuf);
+//		ef_destory_vehicle(ebv);
+//	}
+//
+//	//清理接收到的待发送数据
+//	cds_list_for_each_entry_safe(ebv, nex, &sm->list_sndbuf, elem_sndbuf) {
+//		cds_list_del_init(&ebv->elem_sndbuf);
+//		ef_destory_vehicle(ebv);
+//	}
+//
+//	if (sm->fdpipe[0] != -1) {
+//		cf_closesocket(sm->fdpipe[0]);
+//		sm->fdpipe[0] = -1;
+//	}
+//
+//	if (sm->fdpipe[1] != -1) {
+//		cf_closesocket(sm->fdpipe[1]);
+//		sm->fdpipe[1] = -1;
+//	}
+//#endif//SM_DISPATCH_MODEL
 
 	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -897,8 +941,7 @@ void sm_set_running(session_manager_t* sm, uint8_t run) {
 	}
 }
 
-sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, uint32_t max_send_len,
-	session_behavior_t* accepted_behav, void* udata/*, uint8_t udata_len*/) {
+sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max_listen, session_opt_t* opt) {
 
 	sock_session_t* ss = 0;
 	struct sockaddr_in sin;
@@ -931,7 +974,7 @@ sock_session_t* sm_add_listen(session_manager_t* sm, uint16_t port, uint32_t max
 	if (ss == 0)
 		goto clean;
 
-	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, max_send_len, sf_accpet_cb, NULL/*accpet_function*/, accepted_behav, udata/*, udata_len*/);
+	rt = sf_construct_session(sm, ss, fd, "0.0.0.0", port, opt->rcvlen, opt->sndlen, opt->overflow, sf_accpet_cb, NULL/*accpet_function*/, &opt->behav, opt->udata/*, udata_len*/);
 	if (rt != SERROR_OK)
 		goto clean;
 
@@ -953,19 +996,13 @@ clean:
 
 	if (fd != -1)
 		cf_closesocket(fd);
-//#ifndef _WIN32
-//		close(fd);
-//#else
-//		closesocket(fd);
-//#endif//_WIN32
 
 	if (ss)
 		sf_free_session(sm, ss);
 	return 0;
 }
 
-sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, uint32_t max_send_len,
-	session_behavior_t* behavior, void* udata/*, uint8_t udata_len*/) {
+sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* ip, uint16_t port, session_opt_t* opt){
 
 	if (!sm || fd < 0)
 		return 0;
@@ -975,7 +1012,7 @@ sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* i
 	if (!ss)
 		return 0;
 
-	rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb/*sf_recv_cb*/, sf_send_cb, behavior, udata/*, udata_len*/);
+	rt = sf_construct_session(sm, ss, fd, ip, port, opt->rcvlen, opt->sndlen, opt->overflow, sf_recv_cb/*sf_recv_cb*/, sf_send_cb, &opt->behav, opt->udata/*, udata_len*/);
 	if (rt != SERROR_OK)
 		goto clean;
 
@@ -986,12 +1023,20 @@ sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* i
 
 	//add create event
 	if (ss->uevent.complete_cb) {
-#if (SM_MULTI_THREAD)
-		rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
-		if (rt != SERROR_OK) goto clean;
-#else
-		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, ss->udata);
-#endif//SM_MULTI_THREAD
+		if (sm->flag.dispatch) {
+			rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
+			if (rt != SERROR_OK) goto clean;
+		}
+		else {
+			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
+		}
+
+//#if (SM_DISPATCH_MODEL)
+//		rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
+//		if (rt != SERROR_OK) goto clean;
+////#else
+//		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
+//#endif//SM_DISPATCH_MODEL
 	}
 
 	//add to online list
@@ -1004,10 +1049,7 @@ clean:
 	return 0;
 }
 
-;
-sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint32_t max_send_len, uint8_t is_reconnect, 
-	session_behavior_t* behavior, void* udata/*, uint8_t udata_len*/) {
-
+sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16_t port, uint8_t is_reconnect, session_opt_t* opt) {
 	if (!sm)
 		return 0;
 
@@ -1030,7 +1072,7 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 		if (!ss)
 			break;
 
-		rt = sf_construct_session(sm, ss, fd, ip, port, max_send_len, sf_recv_cb, sf_send_cb, behavior, udata/*, udata_len*/);
+		rt = sf_construct_session(sm, ss, fd, ip, port, opt->rcvlen, opt->sndlen, opt->overflow, sf_recv_cb, sf_send_cb, &opt->behav, opt->udata/*, udata_len*/);
 		if (rt != SERROR_OK)
 			break;
 
@@ -1045,8 +1087,6 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 #else
 		if (rt == -1 && GetLastError() != WSAEWOULDBLOCK) {
 #endif//_WIN32
-			////set need reconnect
-			//ss->flag.closed = ~0;
 			break;
 		}
 		else {
@@ -1062,12 +1102,20 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 
 		//对于非阻塞connect准确的做法是等待套接字可读, 才代表连接完成, 将来这段代码可能会移动到其他地方
 		if (ss->uevent.complete_cb) {
-#if (SM_MULTI_THREAD)
-			rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
-			if (rt != SERROR_OK) break;
-#else
-			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, ss->udata);
-#endif//SM_MULTI_THREAD
+			if (sm->flag.dispatch) {
+				rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
+				if (rt != SERROR_OK) break;
+			}
+			else {
+				ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
+			}
+
+//#if (SM_DISPATCH_MODEL)
+//			rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
+//			if (rt != SERROR_OK) break;
+////#else
+//			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
+//#endif//SM_DISPATCH_MODEL
 		}
 
 		ss->flag.is_connect = ~0;
@@ -1094,9 +1142,6 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 }
 
 void sm_del_session(sock_session_t* ss) {
-	//统一操作, 但不包括服务器列表
-	//sf_del_session(ss, 1);
-
 	ss->flag.fin_peer = ~0;
 	sf_del_event(ss->sm, ss, EV_RECV | EV_WRITE);
 
@@ -1107,11 +1152,6 @@ void sm_del_session(sock_session_t* ss) {
 	if (cds_list_empty(&ss->elem_pending_send) == 0)
 		cds_list_del_init(&ss->elem_pending_send);
 
-	if (cds_list_empty(&ss->elem_listens) == 0)
-		cds_list_del_init(&ss->elem_listens);
-
-	//这里是为了迁就带有数据的FIN报文, 让session延迟回收
-
 	//若没有数据到来,那么移除产生改变的列表, 这里应该永远都不应该被执行
 	if (ss->flag.comming == 0) {
 		if (cds_list_empty(&ss->elem_changed) == 0)
@@ -1121,11 +1161,6 @@ void sm_del_session(sock_session_t* ss) {
 	if (cds_list_empty(&ss->elem_lively) == 0) {
 		cds_list_del_init(&ss->elem_lively);
 	}
-
-	/*if (ss->flag.reconnect == 0) {
-		if (cds_list_empty(&ss->elem_servers) == 0)
-			cds_list_del_init(&ss->elem_servers);
-	}*/
 
 #if(ENABLE_SSL)
 	if (ss->flag.tls) {
@@ -1150,13 +1185,23 @@ void sm_del_session(sock_session_t* ss) {
 	}
 
 	//add create event
-	if (ss->uevent.complete_cb) {
-#if (SM_MULTI_THREAD)
-		sf_common_vehicle(ss, SM_PACKET_TYPE_DESTORY);
-#else
-		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_DESTORY, 0, 0, ss->udata);
-#endif//SM_MULTI_THREAD
+	if (ss->uevent.complete_cb && cds_list_empty(&ss->elem_listens)) {
+		if (ss->sm->flag.dispatch) {
+			sf_common_vehicle(ss, SM_PACKET_TYPE_DESTORY);
+		}
+		else {
+			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_DESTORY, 0, 0, 0, ss->udata, 0, 0);
+		}
+
+//#if (SM_DISPATCH_MODEL)
+//		sf_common_vehicle(ss, SM_PACKET_TYPE_DESTORY);
+////#else
+//		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_DESTORY, 0, 0, 0, ss->udata, 0, 0);
+//#endif//SM_DISPATCH_MODEL
 	}
+
+	if (cds_list_empty(&ss->elem_listens) == 0)
+		cds_list_del_init(&ss->elem_listens);
 }
 
 int sm_add_signal(session_manager_t* sm, uint32_t sig, void (*cb)(int)) {
@@ -1199,7 +1244,58 @@ int32_t sm_0copy_send_fn(sock_session_t* ss, const char* data, uint32_t len, uin
 	return SERROR_INPARAM_ERR;
 }
 
-int32_t sm_tls_enable(sock_session_t* ss, tls_opt_t* tls_opt, _OUT char* errstr) {
+int32_t sm_upgrade_dispatch_model(session_manager_t* sm, session_dispatch_data_cb dispatch_cb) {
+	int32_t rt, __domain = AF_UNIX;
+	sock_session_t* ss;
+	session_opt_t opt;
+#ifdef _WIN32
+	__domain = AF_INET;
+#endif//_WIN32
+
+	memset(&opt, 0, sizeof(opt));
+	opt.rcvlen = 8192;
+	opt.sndlen = 8192;
+	opt.behav.decode_cb = tcp_default_decode_cb;
+	opt.udata = sm;
+
+	if (sm && dispatch_cb) {
+		CDS_INIT_LIST_HEAD(&(sm->list_rcvbuf));
+		CDS_INIT_LIST_HEAD(&(sm->list_sndbuf));
+		CDS_INIT_LIST_HEAD(&(sm->list_tidy));
+		//init rb root 
+		sm->rb_tidy.rb_node = NULL;
+
+		//pipe
+		rt = cf_socketpair(__domain, SOCK_STREAM, 0, sm->fdpipe);
+		if (rt == -1) {
+			return SERROR_SYSAPI_ERR;
+		}
+
+		/*rt = getsockname(fdpipe[0], (struct sockaddr*)&sin, &addrlen);
+		if (rt == -1)
+			goto clean;*/
+
+		ss = sm_add_accepted(sm, sm->fdpipe[0], "pipeline", 0, &opt);
+		if (!ss) {
+			cf_closesocket(sm->fdpipe[0]);
+			cf_closesocket(sm->fdpipe[1]);
+			sm->fdpipe[1] = -1;
+			sm->fdpipe[1] = -1;
+			return SERROR_SYSAPI_ERR;
+		}
+
+		osspin_lk_init(&sm->lk_sndbuf);
+		sm->dispath_cb = dispatch_cb;
+		sm->flag.dispatch = ~0;
+		sm->dispath_cb = dispatch_cb;
+
+		return SERROR_OK;
+	}
+
+	return SERROR_INPARAM_ERR;
+}
+
+int32_t sm_upgrade_tls(sock_session_t* ss, tls_opt_t* tls_opt, _OUT char* errstr) {
 	int32_t err = 0, tlserr, rt, flag;
 #if(ENABLE_SSL)
 	SSL_CTX* ctx = 0;
@@ -1372,7 +1468,6 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 
 	if (ret == -1) {
 		if (errno != EINTR) { return -1; }
-		//printf("epoll_wait: %d, %s\n", errno, strerror(errno));
 		return 0;
 	}
 
@@ -1439,12 +1534,20 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	sf_pending_send(sm);
 	sf_pending_recv(sm);
 
-#if (SM_MULTI_THREAD)
-	sf_call_decode_dispatch_fn(sm);
-	sf_submit_pkgs(sm);
-#else
-	sf_call_decode_fn(sm);
-#endif//SM_MULTI_THREAD
+	if (sm->flag.dispatch) {
+		sf_call_decode_dispatch_fn(sm);
+		sf_submit_pkgs(sm);
+	}
+	else {
+		sf_call_decode_fn(sm);
+	}
+
+//#if (SM_DISPATCH_MODEL)
+//	sf_call_decode_dispatch_fn(sm);
+//	sf_submit_pkgs(sm);
+//#else
+//	sf_call_decode_fn(sm);
+//#endif//SM_DISPATCH_MODEL
 
 	sf_clean_offline(sm);
 
@@ -1458,6 +1561,10 @@ void sm_run(session_manager_t* sm) {
 		//if (cds_list_empty(&sm->list_pending_send) == 0 || cds_list_empty(&sm->list_pending_recv) == 0 || !cds_list_empty(&sm->list_outbox_fifo))
 		if (cds_list_empty(&sm->list_pending_send) == 0 || cds_list_empty(&sm->list_pending_recv) == 0)
 			waitms = 0;
+
+		if (sm->flag.dispatch && !cds_list_empty(&sm->list_sndbuf)) {
+			waitms = 0;
+		}
 
 		//signal
 		if (sm_run2(sm, waitms) == 0) {

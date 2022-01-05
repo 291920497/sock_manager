@@ -20,6 +20,7 @@ typedef struct sock_session {
 
 	session_flag_t	flag;		//状态机
 	uint32_t	uuid_hash;
+	uint32_t	overflow;		//写缓冲区移除长度
 
 	uint16_t	port;
 	char		ip[16];
@@ -38,7 +39,7 @@ typedef struct sock_session {
 	tls_info_t	tls_info;		//tls协议上下文
 //	void*		protocol_info;	//应用层协议
 
-	rcv_decode_mod_t		decode_mod;		//解包模块
+	decode_mod_t		decode_mod;		//解包模块
 	session_rw				recv_cb;		//可读事件回调
 	session_rw				send_cb;		//可写事件回调
 	session_behavior_t		uevent;			//用户行为
@@ -62,7 +63,7 @@ typedef struct session_manager {
 	fd_set			rfdst;
 	fd_set			wfdst;
 #endif//_WIN32
-	uint32_t		overflow;			//该管理器下写缓冲区的溢出长度
+
 	manager_flag_t	flag;		//状态机
 
 	heap_timer_t* ht_timer;	//定时器
@@ -76,15 +77,16 @@ typedef struct session_manager {
 	cds_list_head_t list_pending_send;
 	cds_list_head_t list_session_cache;
 
-#if (SM_MULTI_THREAD)
+//#if (SM_DISPATCH_MODEL)
+#if 1
 	int32_t			fdpipe[2];
 	cds_list_head_t list_rcvbuf;			//接收到的事件, entry类型为external_buf_vehicle_t
 	cds_list_head_t list_sndbuf;			//等待发送的数据列表, entry类型为external_buf_vehicle_t
 	osspin_lk_t		lk_sndbuf;				//待发送数据列表的自旋锁
-	session_dispatch_data_cb dispath_data_cb;	//派发数据包的回调函数
+	session_dispatch_data_cb dispath_cb;	//派发数据包的回调函数
 	rb_root_t		rb_tidy;				//用于整理数据包
 	cds_list_head_t list_tidy;				//整理后的待发送数据包链表
-#endif//SM_MULTI_THREAD
+#endif//SM_DISPATCH_MODEL
 }session_manager_t;
 
 #endif//_TYPES_HPP_

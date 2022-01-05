@@ -11,7 +11,7 @@
 #define BINARY_MAX_SEND 8192
 #define BINARY_MAX_RECV 16384
 
-int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
+int32_t tcp_binary_decode_cb(sock_session_t* ss, char* data, uint32_t len, decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
 	int type_length = sizeof(TBINARY_LENGTH_TYPE);
 
 	//长度标志不完整

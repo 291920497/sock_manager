@@ -270,7 +270,7 @@ handshake_failed:
 	return 0;
 }
 
-static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* offset, uint32_t* back_offset, uint32_t* pkg_type, uint8_t isck_msk) {
+static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t data_len, decode_mod_t* mod, uint32_t* offset, uint32_t* back_offset, uint32_t* pkg_type, uint8_t isck_msk) {
 	if ((data_len - mod->processed) < 2) {
 		mod->lenght_tirgger = mod->processed + 2;
 		return 0;
@@ -439,7 +439,7 @@ static int32_t sf_ws_parse_frame(struct sock_session* ss, char* data, uint32_t d
 	return 0;
 }
 
-int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, rcv_decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
+int32_t ws_decode_cb(sock_session_t* ss, char* data, uint32_t data_len, decode_mod_t* mod, uint32_t* front_offset, uint32_t* back_offset, uint32_t* pkg_type) {
 	uint32_t total = 0, capcity;
 	uint32_t len = mod->processed;
 

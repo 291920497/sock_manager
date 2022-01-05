@@ -113,7 +113,8 @@ static void ef_remove_msgfvehicle(external_buf_vehicle_t* ebv, external_buf_t* e
 }
 
 
-#if (SM_MULTI_THREAD)
+//#if (SM_DISPATCH_MODEL)
+#if 1
 //投递一组包含数据包的载具
 static void ef_deliver_pkgs(session_manager_t* sm ,cds_list_head_t* vehicle) {
 	if (!sm || !vehicle)
@@ -133,7 +134,7 @@ static void ef_deliver_pkgs(session_manager_t* sm ,cds_list_head_t* vehicle) {
 	}
 }
 
-#endif//SM_MULTI_THREAD
+#endif//SM_DISPATCH_MODEL
 
 //rbtree
 /**********************************************************/

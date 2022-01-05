@@ -26,8 +26,6 @@
 
 //通信协议通用
 #define SERROR_DECODE_ERR		(-200)	//协议解析类错误
-//#define SERROR_PING				(-201)	//ping包
-//#define SERROR_PONG				(-202)	//ping包
 
 //ws协议相关
 #define SERROR_WS_HANDSHAKE_ERR	(-300)	//握手失败
