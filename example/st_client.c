@@ -13,7 +13,7 @@ void complate_cb(sock_session_t* ss, uint32_t hash, uint32_t pkg_type, uint32_t 
 
 int main(int argc, char** argv) {
 	if (argc < 6) {
-		printf("exec CacheCount(4096) ConnectHost(127.0.0.1) ConnectPort(6666) ClientCount(20480) SendDataLen(<8188)\n");
+		printf("exec CacheCount(20480) ConnectHost(127.0.0.1) ConnectPort(6666) ClientCount(20480) SendDataLen(<4096)\n");
 		return -1;
 	}
 
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
 
 	for (int i = 0; i < nClientCount; ++i) {
 		sock_session_t* ss = sm_add_connect(sm, ip, nPort, 0, &opt);
-		sm_0copy_send_fn(ss, data, 8188, 1, 0);
+		sm_0copy_send_fn(ss, data, nSendDataLen, 1, 0);
 	}
 	
 	sm_run(sm);
