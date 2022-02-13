@@ -1,5 +1,13 @@
 # sock_manager
  socket session manager
+ 
+# 描述
+	这是由C语言编写的,提供一个高性能的、可拓展的网络库,它原生开发在Linux,采用epoll驱动I/O,但在Windows下采用select模型.支持定时器,信号处理. 并且在普通模式下运行是完全0拷贝的.
+# 协议
+	内置了websocket、TCP Binary、TLS(当然TLS是可以与websocket或TCP Binary相结合的实现wss,或普通的基于TLS加密通信), 当然如果你引入了http协议解析以及使能TLS模块,便能支持https.
+# 压测
+	压测环境为Centos7 4G 1CPU 2core虚拟机环境下, 同一台物理机下采用20K客户端连接服务器, 发送4K字节数据,服务器收到并回显,并在LAN下另外的物理机使用2K个套接字连接该服务,测试在该环境下的效率,数据的发送到回显时间不足2ms
+	使用valgrind测试无内存泄漏,之后提交将带上perl+valgrind测试报告
 
 # 类型说明
 	@session_opt_t
