@@ -81,6 +81,42 @@ target_link_libraries(st_client
 		${BASIS_LIBRARY}
 )
 
+#单线程服务器测试用例
+project(st_ws_server)
+
+add_executable(st_ws_server
+	${SM_SRC}
+	example/st_ws_server.c
+)
+
+target_include_directories(st_ws_server
+	PUBLIC
+		${PROJECT_SOURCE_DIR}
+)
+
+target_link_libraries(st_ws_server
+	PRIVATE
+		${BASIS_LIBRARY}
+)
+
+#单线程客户端测试用例
+project(st_ws_client)
+
+add_executable(st_ws_client
+	${SM_SRC}
+	example/st_ws_client.c
+)
+
+target_include_directories(st_ws_client
+	PUBLIC
+		${PROJECT_SOURCE_DIR}
+)
+
+target_link_libraries(st_ws_client
+	PRIVATE
+		${BASIS_LIBRARY}
+)
+
 #单线程tls websocket服务器测试用例
 project(st_wss_server)
 
