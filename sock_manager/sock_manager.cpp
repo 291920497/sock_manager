@@ -1,4 +1,3 @@
-//#include "../inc/types.h"
 #include "sock_manager.h"
 #include "internal_fn.h"
 
@@ -121,9 +120,6 @@ static int32_t sf_construct_session(session_manager_t* sm, sock_session_t* ss, i
 
 	CDS_INIT_LIST_HEAD(&(ss->elem_lively));
 	CDS_INIT_LIST_HEAD(&(ss->elem_offline));
-#ifdef _WIN32
-	//CDS_INIT_LIST_HEAD(&(ss->elem_forgotten));
-#endif//_WIN32
 	CDS_INIT_LIST_HEAD(&(ss->elem_listens));
 	CDS_INIT_LIST_HEAD(&(ss->elem_changed));
 	CDS_INIT_LIST_HEAD(&(ss->elem_pending_recv));
@@ -154,13 +150,6 @@ static void sf_destruct_session(sock_session_t* ss) {
 		cds_list_del(&(ss->elem_lively));
 	if (ss->elem_offline.next)
 		cds_list_del(&(ss->elem_offline));
-	/*if (ss->elem_servers.next)
-		cds_list_del(&(ss->elem_servers));*/
-#ifdef _WIN32
-	//CDS_INIT_LIST_HEAD(&(sm->list_forgotten));
-	//if(ss->elem_forgotten.next)
-		//cds_list_del(&(ss->elem_forgotten));
-#endif//_WIN32
 	if (ss->elem_listens.next)
 		cds_list_del(&(ss->elem_listens));
 	if (ss->elem_changed.next)
@@ -177,9 +166,6 @@ static void sf_destruct_session(sock_session_t* ss) {
 
 	CDS_INIT_LIST_HEAD(&(ss->elem_lively));
 	CDS_INIT_LIST_HEAD(&(ss->elem_offline));
-#ifdef _WIN32
-	//CDS_INIT_LIST_HEAD(&(ss->elem_forgotten));
-#endif//_WIN32
 	CDS_INIT_LIST_HEAD(&(ss->elem_listens));
 	CDS_INIT_LIST_HEAD(&(ss->elem_changed));
 	CDS_INIT_LIST_HEAD(&(ss->elem_pending_recv));
@@ -299,15 +285,8 @@ static void sf_pending_send(session_manager_t* sm) {
 		sock_session_t* ss, * n;
 		if (cds_list_empty(&sm->list_pending_send) == 0) {
 			cds_list_for_each_entry_safe(ss, n, &sm->list_pending_send, elem_pending_send) {
-				//减少不必要的函数调用
-				//if (ss->flag.closed == 0 && RWBUF_GET_LEN(&ss->wbuf))
-
 				//迎合tls, 不对写入长度做判断, 应该真正写入的数据可能在Bio中
 				if (ss->flag.fin_peer == 0) {
-					/*if (ss->flag.tls)
-						sf_tls_send_cb(ss);
-					else
-						sf_send_cb(ss);*/
 					if (ss->send_cb)
 						ss->send_cb(ss);
 				}
@@ -376,9 +355,6 @@ static void sf_call_decode_dispatch_fn(session_manager_t* sm) {
 
 	external_buf_vehicle_t* ebv;
 	external_buf_vehicle_t* pos, * p;
-	//cds_list_head_t* _head = (cds_list_head_t*)_sm_malloc(sizeof(cds_list_head_t));
-	//if (!_head) return;	//不会失败, 失败就等着缓冲区满吧= =
-
 
 	cds_list_for_each_entry_safe(ss, n, &sm->list_changed, elem_changed) {
 		rbuf = &ss->rbuf;
@@ -481,11 +457,6 @@ static void sf_call_decode_dispatch_fn(session_manager_t* sm) {
 	}
 
 	return;
-//
-//clean:
-//	cds_list_for_each_entry_safe(pos, p, &sm->list_rcvbuf, elem_sndbuf) {
-//		ef_destory_vehicle(pos);
-//	}
 }
 
 static void sf_submit_pkgs(session_manager_t* sm) {
@@ -679,12 +650,6 @@ static void sf_clean_offline(session_manager_t* sm) {
 	}
 }
 
-//#if(SM_DISPATCH_MODEL)
-//session_manager_t* sm_init_manager(uint32_t session_cache_size, session_dispatch_data_cb dispatch_cb) {
-//	if (!dispatch_cb) return 0;
-//#else
-//session_manager_t* sm_init_manager(uint32_t session_cache_size) {
-//#endif//SM_DISPATCH_MODEL
 session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 
 	int32_t rt = -1, __domain = AF_UNIX, port;
@@ -717,14 +682,6 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	CDS_INIT_LIST_HEAD(&(sm->list_pending_recv));
 	CDS_INIT_LIST_HEAD(&(sm->list_pending_send));
 	CDS_INIT_LIST_HEAD(&(sm->list_session_cache));
-
-//#if (SM_DISPATCH_MODEL)
-//	CDS_INIT_LIST_HEAD(&(sm->list_rcvbuf));
-//	CDS_INIT_LIST_HEAD(&(sm->list_sndbuf));
-//	CDS_INIT_LIST_HEAD(&(sm->list_tidy));
-//	//init rb root 
-//	sm->rb_tidy.rb_node = NULL;
-//#endif//SM_DISPATCH_MODEL
 
 	//create cache_session
 	for (int i = 0; i < session_cache_size; ++i) {
@@ -759,25 +716,6 @@ session_manager_t* sm_init_manager(uint32_t session_cache_size) {
 	__domain = AF_INET;
 #endif//_WIN32
 
-//#if(SM_DISPATCH_MODEL)
-//	//pipe
-//	rt = cf_socketpair(__domain, SOCK_STREAM, 0, sm->fdpipe);
-//	if (rt == -1)
-//		goto clean;
-//
-//	/*rt = getsockname(fdpipe[0], (struct sockaddr*)&sin, &addrlen);
-//	if (rt == -1)
-//		goto clean;*/
-//
-//	ss = sm_add_accepted(sm, sm->fdpipe[0], "pipeline", 0, &opt);
-//	if (!ss)
-//		goto clean;
-//
-//	osspin_lk_init(&sm->lk_sndbuf);
-//	sm->dispath_cb = dispatch_cb;
-//
-//#endif//SM_DISPATCH_MODEL
-
 	ht_add_timer(sm->ht_timer, MAX_RECONN_SERVER_TIMEOUT * 1000, -(MAX_RECONN_SERVER_TIMEOUT * 1000) + 500, -1, sf_timer_reconn_cb, &sm, sizeof(void*));
 
 #if(ENABLE_SSL)
@@ -802,18 +740,6 @@ clean:
 	if (sm->ep_fd != -1)
 		cf_closesocket(sm->ep_fd);
 #endif//_WIN32
-
-//#if(SM_DISPATCH_MODEL)
-//	if (sm->fdpipe[0] != -1) {
-//		cf_closesocket(sm->fdpipe[0]);
-//		sm->fdpipe[0] = -1;
-//	}
-//	
-//	if (sm->fdpipe[1] != -1) {
-//		cf_closesocket(sm->fdpipe[1]);
-//		sm->fdpipe[1] = -1;
-//	}
-//#endif//SM_DISPATCH_MODEL.
 
 	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -891,34 +817,6 @@ void sm_exit_manager(session_manager_t* sm) {
 			sm->fdpipe[1] = -1;
 		}
 	}
-
-//#if(SM_DISPATCH_MODEL)
-//
-//	osspin_lk_exit(&sm->lk_sndbuf);
-//
-//	//清理即将下发的链表
-//	external_buf_vehicle_t* ebv, * nex;
-//	cds_list_for_each_entry_safe(ebv, nex, &sm->list_rcvbuf, elem_sndbuf) {
-//		cds_list_del_init(&ebv->elem_sndbuf);
-//		ef_destory_vehicle(ebv);
-//	}
-//
-//	//清理接收到的待发送数据
-//	cds_list_for_each_entry_safe(ebv, nex, &sm->list_sndbuf, elem_sndbuf) {
-//		cds_list_del_init(&ebv->elem_sndbuf);
-//		ef_destory_vehicle(ebv);
-//	}
-//
-//	if (sm->fdpipe[0] != -1) {
-//		cf_closesocket(sm->fdpipe[0]);
-//		sm->fdpipe[0] = -1;
-//	}
-//
-//	if (sm->fdpipe[1] != -1) {
-//		cf_closesocket(sm->fdpipe[1]);
-//		sm->fdpipe[1] = -1;
-//	}
-//#endif//SM_DISPATCH_MODEL
 
 	if (sm->ht_timer)
 		ht_destroy_heap_timer(sm->ht_timer);
@@ -1030,13 +928,6 @@ sock_session_t* sm_add_accepted(session_manager_t* sm, int32_t fd, const char* i
 		else {
 			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
 		}
-
-//#if (SM_DISPATCH_MODEL)
-//		rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
-//		if (rt != SERROR_OK) goto clean;
-////#else
-//		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
-//#endif//SM_DISPATCH_MODEL
 	}
 
 	//add to online list
@@ -1109,13 +1000,6 @@ sock_session_t* sm_add_connect(session_manager_t* sm, const char* domain, uint16
 			else {
 				ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
 			}
-
-//#if (SM_DISPATCH_MODEL)
-//			rt = sf_common_vehicle(ss, SM_PACKET_TYPE_CREATE);
-//			if (rt != SERROR_OK) break;
-////#else
-//			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_CREATE, 0, 0, 0, ss->udata, 0, 0);
-//#endif//SM_DISPATCH_MODEL
 		}
 
 		ss->flag.is_connect = ~0;
@@ -1192,12 +1076,6 @@ void sm_del_session(sock_session_t* ss) {
 		else {
 			ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_DESTORY, 0, 0, 0, ss->udata, 0, 0);
 		}
-
-//#if (SM_DISPATCH_MODEL)
-//		sf_common_vehicle(ss, SM_PACKET_TYPE_DESTORY);
-////#else
-//		ss->uevent.complete_cb(ss, ss->uuid_hash, SM_PACKET_TYPE_DESTORY, 0, 0, 0, ss->udata, 0, 0);
-//#endif//SM_DISPATCH_MODEL
 	}
 
 	if (cds_list_empty(&ss->elem_listens) == 0)
@@ -1538,13 +1416,6 @@ int32_t sm_run2(session_manager_t* sm, uint64_t us) {
 	else {
 		sf_call_decode_fn(sm);
 	}
-
-//#if (SM_DISPATCH_MODEL)
-//	sf_call_decode_dispatch_fn(sm);
-//	sf_submit_pkgs(sm);
-//#else
-//	sf_call_decode_fn(sm);
-//#endif//SM_DISPATCH_MODEL
 
 	sf_clean_offline(sm);
 

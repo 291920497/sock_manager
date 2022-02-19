@@ -295,22 +295,8 @@ static int sf_try_accept(int __fd, struct sockaddr* __addr, socklen_t* __restric
 	return fd;
 }
 
-//#if (SM_DISPATCH_MODEL)
-//extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
-//#endif//SM_DISPATCH_MODEL
-
-
 extern external_buf_vehicle_t* ef_tidy_search(rb_root_t* root, uint32_t hash);
 static void sf_finalwork_finished(sock_session_t* ss) {
-//#if (SM_DISPATCH_MODEL)
-//	external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
-//	//若还有尚未发送的数据
-//	if (ebv) return;
-//#endif//SM_DISPATCH_MODEL
-//
-//	printf("[%s] [%s:%d] [%s], Ready to disconnect, ip: [%s] port: [%d], serr: [%d], errcode: [%d], msg: [%s]\n", sf_timefmt(), __FILENAME__, __LINE__, __FUNCTION__, ss->ip, ss->port, SERROR_LOCAL_DISCONN, 0, "Data transmission completed");
-//	sm_del_session(ss);
-
 	if (ss->sm->flag.dispatch) {
 		external_buf_vehicle_t* ebv = ef_tidy_search(&ss->sm->rb_tidy, ss->uuid_hash);
 		//若还有尚未发送的数据
