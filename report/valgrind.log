@@ -1,0 +1,15 @@
+==68444== Memcheck, a memory error detector
+==68444== Copyright (C) 2002-2017, and GNU GPL'd, by Julian Seward et al.
+==68444== Using Valgrind-3.15.0 and LibVEX; rerun with -h for copyright info
+==68444== Command: ./st_server 20480 6666
+==68444== Parent PID: 13998
+==68444== 
+==68444== 
+==68444== HEAP SUMMARY:
+==68444==     in use at exit: 0 bytes in 0 blocks
+==68444==   total heap usage: 50,751 allocs, 50,751 frees, 254,118,177 bytes allocated
+==68444== 
+==68444== All heap blocks were freed -- no leaks are possible
+==68444== 
+==68444== For lists of detected and suppressed errors, rerun with: -s
+==68444== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
