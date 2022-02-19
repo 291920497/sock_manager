@@ -5,8 +5,17 @@ project(sock_manager)
 IF (CMAKE_SYSTEM_NAME MATCHES "Linux")
 set	(SM_STL sock_manager/tools/stl/list.h)
 set (CMAKE_C_FLAGS "-std=gnu99")
+set (BASIS_LIBRARY 
+	uuid 
+	pthread
+)
+
 ELSEIF ((CMAKE_SYSTEM_NAME MATCHES "Windows"))
 set	(SM_STL sock_manager/tools/stl/wlist.h)
+set (BASIS_LIBRARY
+	ws2_32
+)
+
 ENDIF (CMAKE_SYSTEM_NAME MATCHES "Linux")
 
 set(SM_TOOLS
@@ -51,8 +60,7 @@ target_include_directories(st_server
 
 target_link_libraries(st_server
 	PRIVATE
-		uuid
-		pthread
+		${BASIS_LIBRARY}
 )
 
 #单线程客户端测试用例
@@ -70,8 +78,7 @@ target_include_directories(st_client
 
 target_link_libraries(st_client
 	PRIVATE
-		uuid
-		pthread
+		${BASIS_LIBRARY}
 )
 
 #单线程tls websocket服务器测试用例
@@ -89,8 +96,7 @@ target_include_directories(st_wss_server
 
 target_link_libraries(st_wss_server
 	PRIVATE
-		uuid
-		pthread
+		${BASIS_LIBRARY}
 		ssl
 		crypto
 )
@@ -112,8 +118,7 @@ target_include_directories(st_wss_client
 
 target_link_libraries(st_wss_client
 	PRIVATE
-		uuid
-		pthread
+		${BASIS_LIBRARY}
 		ssl
 		crypto
 )

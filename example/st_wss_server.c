@@ -45,6 +45,11 @@ int main(int argc, char** argv) {
 	opt.behav.encode_fn = ws_svr_encode_fn;
 	opt.behav.complete_cb = complate_cb;
 
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif//_WIN32
+
 	session_manager_t* sm = sm_init_manager(nCacheCount);
 	g_sm = sm;
 
@@ -82,6 +87,10 @@ int main(int argc, char** argv) {
 	sm_run(sm);
 
 	sm_exit_manager(sm);
+
+#ifdef _WIN32
+    WSACleanup();
+#endif//_WIN32
 
 	return 0;
 }

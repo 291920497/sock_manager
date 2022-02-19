@@ -28,6 +28,11 @@ int main(int argc, char** argv) {
 	
 	char data[8192];
 
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif//_WIN32
+
 	session_opt_t opt;
 	opt.rcvlen = 8192;
 	opt.sndlen = 8192;
@@ -55,6 +60,10 @@ int main(int argc, char** argv) {
 	sm_run(sm);
 
 	sm_exit_manager(sm);
+
+#ifdef _WIN32
+    WSACleanup();
+#endif//_WIN32
 
 	return 0;
 }
