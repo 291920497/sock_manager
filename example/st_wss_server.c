@@ -6,10 +6,10 @@
 #include "sock_manager/protocol/websocket/ws.h"
 #include <signal.h>
 
-#define CA_FILE "/root/tls/root/root.crt"
-#define CERT_FILE "/root/tls/server/server.crt"
-#define KEY_FILE "/root/tls/server/server.key"
-#define PWD "123456"
+//#define CA_FILE "/root/tls/root/root.crt"
+//#define CERT_FILE "/root/tls/server/server.crt"
+//#define KEY_FILE "/root/tls/server/server.key"
+//#define PWD "123456"
 
 session_manager_t* g_sm;
 
@@ -17,14 +17,22 @@ void sig_cb(int sig);
 void complate_cb(sock_session_t* ss, uint32_t hash, uint32_t pkg_type, uint32_t total, const char* data, uint32_t len, void* udata, session_behavior_t* behav, external_buf_vehicle_t* ebv);
 
 int main(int argc, char** argv) {
-	if (argc < 3) {
-		printf("exec CacheCount(20480) ListenPort(6666)\n");
+	if (argc < 5) {
+        //如果需要客户端提供证书,才需要CA_FILE
+        printf("%s <CacheCount> <ListenPort> <CERT_FILE> <KET_FILE> [CA_FILE]\n"\
+            "example: %s 20480 6666 /root/tls/server/server.crt /root/tls/server/server.key /root/tls/root/ca.crt\n", argv[0], argv[0]);
 		return -1;
 	}
 
 	int32_t rt;
 	uint32_t nCacheCount = atoi(argv[1]);
 	uint16_t nPort = atoi(argv[2]);
+    const char* szCertFile = argv[3];
+    const char* szKeyFile = argv[4];
+    const char* szCAFile = 0;
+    if (argc > 5) {
+        szCAFile = argv[5];
+    }
 
 	session_opt_t opt;
 	opt.rcvlen = 8192;
@@ -41,6 +49,10 @@ int main(int argc, char** argv) {
 	g_sm = sm;
 
 	sm_add_signal(sm, SIGINT, sig_cb);
+#ifndef _WIN32
+	//由于openssl ,在调用SSL_shutdown时, BIO_write可能还有一些工作, 会导致SIGPIPE错误, 忽略即可
+	sm_add_signal(sm, SIGPIPE, sig_cb);
+#endif//_WIN32
 	sock_session_t* ss = sm_add_listen(sm, nPort, 1024, &opt);
 
 	//upgrade tls
@@ -52,18 +64,18 @@ int main(int argc, char** argv) {
 
 	//是否要求客户端提供证书
 	if (is_need_client_cert) {
-		tlsopt.ca = CA_FILE;
+		tlsopt.ca = szCAFile;
 		tlsopt.verify_peer = 1;
 	}
 
-	tlsopt.cert = CERT_FILE;
-	tlsopt.key = KEY_FILE;
-	tlsopt.password = PWD;
+	tlsopt.cert = szCertFile;
+	tlsopt.key = szKeyFile;
+	tlsopt.password = 0;
 
 	//提升为tls协议
 	rt = sm_upgrade_tls(ss, &tlsopt, errstr);
 	if (rt != SERROR_OK) {
-		printf("%s\n", errstr);
+        printf("err: %d, %s\n", rt, errstr);
 		exit(-1);
 	}
 

@@ -44,7 +44,12 @@ int main(int argc, char** argv) {
 
 	for (int i = 0; i < nClientCount; ++i) {
 		sock_session_t* ss = sm_add_connect(sm, ip, nPort, 0, &opt);
-		sm_0copy_send_fn(ss, data, nSendDataLen, 1, 0);
+		//sm_0copy_send_fn(ss, data, nSendDataLen, 1, 0);
+		if(ss){	
+			sm_0copy_send_fn(ss, data, nSendDataLen, 1, 0);
+		}else{
+			printf("sm_add_connect failed\n");
+		}
 	}
 	
 	sm_run(sm);

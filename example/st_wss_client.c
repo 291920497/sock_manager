@@ -6,10 +6,10 @@
 #include "sock_manager/protocol/websocket/ws.h"
 #include <signal.h>
 
-#define CA_FILE "/root/tls/root/root.crt"
-#define CERT_FILE "/root/tls/client/client.crt"
-#define KEY_FILE "/root/tls/client/client.key"
-#define PWD "123456"
+//#define CA_FILE "/root/tls/root/root.crt"
+//#define CERT_FILE "/root/tls/client/client.crt"
+//#define KEY_FILE "/root/tls/client/client.key"
+//#define PWD "123456"
 
 session_manager_t* g_sm;
 
@@ -17,8 +17,10 @@ void sig_cb(int sig);
 void complate_cb(sock_session_t* ss, uint32_t hash, uint32_t pkg_type, uint32_t total, const char* data, uint32_t len, void* udata, session_behavior_t* behav, external_buf_vehicle_t* ebv);
 
 int main(int argc, char** argv) {
-	if (argc < 6) {
-		printf("exec CacheCount(20480) ConnectHost(127.0.0.1) ConnectPort(6666) ClientCount(20480) SendDataLen(<4096)\n");
+	if (argc < 8) {
+        //是否使用CERT_FILE KET_FILE取决于对端是否需要客户端提供证书, CA_FILE若使能这校验对端证书
+        printf("%s <CacheCount> <ConnectHost> <ConnectPort> <ClientCount> <SendDataLen> [CERT_FILE] [KET_FILE] [CA_FILE]\n", argv[0]);
+		printf("example: %s 20480 127.0.0.1 6666 20480 4096 /root/tls/client/client.crt /root/tls/client/client.key\n", argv[0]);
 		return -1;
 	}
 
@@ -28,6 +30,13 @@ int main(int argc, char** argv) {
 	uint16_t nPort = atoi(argv[3]);
 	uint32_t nClientCount = atoi(argv[4]);
 	uint32_t nSendDataLen = atoi(argv[5]);
+
+    const char* szCertFile = argv[6];
+    const char* szKeyFile = argv[7];
+    const char* szCAFile = 0;
+    if (argc > 8) {
+        szCAFile = argv[8];
+    }
 
 	if (nSendDataLen > 8192)
 		nSendDataLen = 8188;
@@ -51,10 +60,10 @@ int main(int argc, char** argv) {
 	tls_opt_t tlsopt;
 	memset(&tlsopt, 0, sizeof(tlsopt));
 
-	tlsopt.ca = CA_FILE;	//客户端需要检验服务器的证书, 是否信任, 如果是自签证书, 需要设置ca
-	tlsopt.cert = CERT_FILE;
-	tlsopt.key = KEY_FILE;
-	tlsopt.password = PWD;
+	tlsopt.ca = szCAFile;	//客户端需要检验服务器的证书, 是否信任, 如果是自签证书, 需要设置ca
+	tlsopt.cert = szCertFile;
+	tlsopt.key = szKeyFile;
+	tlsopt.password = 0;
 	//tlsopt.verify_peer = 0;	//默认校验
 
 	session_manager_t* sm = sm_init_manager(nCacheCount);

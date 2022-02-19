@@ -113,9 +113,9 @@ static inline struct page * rb_insert_page_cache(struct inode * inode,
 #include <stddef.h>
 #include "./compiler.h"
 
-//#ifdef __cplusplus
-//extern "C" {
-//#endif//__cplusplus
+#ifdef __cplusplus
+extern "C" {
+#endif//__cplusplus
 
 #undef NULL
 #if defined(__cplusplus)
@@ -206,8 +206,8 @@ static inline void rb_link_node(struct rb_node * node, struct rb_node * parent,
 }
 
 
-//#ifdef __cplusplus
-//}
-//#endif//__cplusplus
+#ifdef __cplusplus
+}
+#endif//__cplusplus
 
 #endif	/* _LINUX_RBTREE_H */

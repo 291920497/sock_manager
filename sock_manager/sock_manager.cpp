@@ -1353,9 +1353,6 @@ int32_t sm_upgrade_tls(sock_session_t* ss, tls_opt_t* tls_opt, _OUT char* errstr
 			if (errstr)
 				ERR_error_string(ERR_get_error(), errstr);
 
-			if (ctx)
-				SSL_CTX_free(ctx);
-
 			ERR_clear_error();
 			goto clean;
 		}

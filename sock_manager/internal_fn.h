@@ -261,7 +261,7 @@ static int sf_try_socket(int _domain, int _type, int _protocol) {
 /**
 *	s_try_accept - Try to accept a sock fileno
 */
-static int sf_try_accept(int __fd, sockaddr* __addr, socklen_t* __restrict __addr_len) {
+static int sf_try_accept(int __fd, struct sockaddr* __addr, socklen_t* __restrict __addr_len) {
 	int fd = -1, try_count = 1, err;
 
 	do {
